@@ -16,9 +16,9 @@ pub enum TokenCode<'a> {
     VOID,
     WHILE,
 
-    CT_INT(&'a str),
-    CT_REAL(&'a str),
-    CT_CHAR(&'a str),
+    CT_INT(i64),
+    CT_REAL(f64),
+    CT_CHAR(char),
     CT_STRING(&'a str),
 
     COMMA,
@@ -128,7 +128,6 @@ impl<'a> Lexer<'a> {
         }
         &self.tokens
     }
-
 
     fn advance(&mut self) -> Option<u8> {
         let c = self.peek();
@@ -330,7 +329,7 @@ impl<'a> Lexer<'a> {
                     _ => {
                         let text = self.slice(start, self.pos);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_INT(text));
+                        return self.tk(TokenCode::CT_INT(text.parse().unwrap()));
                     }
                 },
 
@@ -348,9 +347,8 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                     _ => {
-                        let text = self.slice(start, self.pos);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_INT(text));
+                        return self.tk(TokenCode::CT_INT(0));
                     }
                 },
 
@@ -361,7 +359,9 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_INT(text));
+                            return self.tk(TokenCode::CT_INT(
+                                i64::from_str_radix(text.strip_prefix("0").unwrap(), 8).unwrap(),
+                            ));
                         }
                     };
                 }
@@ -380,7 +380,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_INT(text));
+                            return self.tk(TokenCode::CT_INT(i64::from_str_radix(text.strip_prefix("0x").unwrap(), 16).unwrap(),));
                         }
                     };
                 }
@@ -403,7 +403,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_REAL(text));
+                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap()));
                         }
                     };
                 }
@@ -434,7 +434,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_REAL(text));
+                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap()));
                         }
                     };
                 }
@@ -443,7 +443,7 @@ impl<'a> Lexer<'a> {
                     Some(b'"') => {
                         let text = self.slice(start, self.pos);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_STRING(text));
+                        return self.tk(TokenCode::CT_STRING(&text[1..text.len() - 1]));
                     }
                     Some(b'\n') | None => {
                         self.panic("expected '\"' maybe you forgot to close a string ?")
@@ -460,7 +460,7 @@ impl<'a> Lexer<'a> {
                     Some(b'\'') => {
                         let text = self.slice(start, self.pos);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_CHAR(text));
+                        return self.tk(TokenCode::CT_CHAR(char::from(text.as_bytes()[1])));
                     }
                     _ => self.panic("expected closing ' for char"),
                 },
