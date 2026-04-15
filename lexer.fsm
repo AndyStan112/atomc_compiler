@@ -1,0 +1,153 @@
+Start
+[ \n\r\t] -> Start
+[a-zA-Z_] -> ID
+[1-9] -> INT
+0 -> ZERO
+" -> STRING
+' -> CHAR
+/ -> SLASH
+& -> AND1
+| -> OR1
+= -> ASSIGN1
+! -> NOT1
+< -> LESS1
+> -> GREATER1
++ -> ADD
+- -> SUB
+* -> MUL
+, -> COMMA
+; -> SEMICOLON
+( -> LPAR
+) -> RPAR
+[ -> LBRACKET
+] -> RBRACKET
+{ -> LACC
+} -> RACC
+. -> DOT
+\0 -> END
+->Error
+(ID)
+[a-zA-Z0-9_] -> ID
+->ID_END
+(ID_END)
+break -> BREAK
+char -> CHAR_KW
+double -> DOUBLE
+else -> ELSE
+for -> FOR
+if -> IF
+int -> INT_KW
+return -> RETURN
+struct -> STRUCT
+void -> VOID
+while -> WHILE
+->ID_TOKEN
+(INT)
+[0-9] -> INT
+. -> REAL_DOT
+[eE] -> REAL_EXP
+->CT_INT
+(REAL_DOT)
+[0-9] -> REAL_FRAC
+->Error
+(REAL_FRAC)
+[0-9] -> REAL_FRAC
+[eE] -> REAL_EXP
+->CT_REAL
+(REAL_EXP)
+[+-]? -> REAL_EXP_SIGN
+[0-9] -> REAL_EXP_NUM
+->Error
+(REAL_EXP_SIGN)
+[0-9] -> REAL_EXP_NUM
+->Error
+(REAL_EXP_NUM)
+[0-9] -> REAL_EXP_NUM
+->CT_REAL
+(STRING)
+[^"] -> STRING
+" -> CT_STRING
+->Error
+(CHAR)
+[^'] -> CHAR_END
+->Error
+(CHAR_END)
+' -> CT_CHAR
+->Error
+(SLASH)
+/ -> LINE_COMMENT
+->DIV
+(LINE_COMMENT)
+[^\n\r\0] -> LINE_COMMENT
+->Start
+(AND1)
+& -> AND
+->Error
+(OR1)
+| -> OR
+->Error
+(ASSIGN1)
+= -> EQUAL
+->ASSIGN
+(NOT1)
+= -> NOTEQ
+->NOT
+(LESS1)
+= -> LESSEQ
+->LESS
+(GREATER1)
+= -> GREATEREQ
+->GREATER
+ZERO
+[1-9] -> OCTAL_INT
+. -> REAL_DOT
+[^\n\r\0] -> CT_INT
+x -> HEX
+(OCTAL_INT)
+[0-9] -> OCTAL_INT
+[^\n\r\0] -> CT_INT
+HEX
+[0-9] -> HEX_INT
+(HEX_INT)
+[0-9] -> HEX_INT
+[^\n\r\0] -> CT_INT
+~(Error)
+(ADD)
+(SUB)
+(MUL)
+(COMMA)
+(SEMICOLON)
+(LPAR)
+(RPAR)
+(LBRACKET)
+(RBRACKET)
+(LACC)
+(RACC)
+(DOT)
+(END)
+(AND)
+(OR)
+(ASSIGN)
+(EQUAL)
+(NOTEQ)
+(NOT)
+(LESS)
+(LESSEQ)
+(GREATER)
+(GREATEREQ)
+(CT_INT)
+(CT_REAL)
+(CT_CHAR)
+(CT_STRING)
+(ID_TOKEN)
+(BREAK)
+(CHAR_KW)
+(DOUBLE)
+(ELSE)
+(FOR)
+(IF)
+(INT_KW)
+(RETURN)
+(STRUCT)
+(VOID)
+(WHILE)
