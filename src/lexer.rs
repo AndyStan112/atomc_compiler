@@ -441,9 +441,9 @@ impl<'a> Lexer<'a> {
 
                 State::STRING => match self.advance() {
                     Some(b'"') => {
-                        let text = self.slice(start, self.pos);
+                        let text = self.slice(start + 1, self.pos -1);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_STRING(&text[1..text.len() - 1]));
+                        return self.tk(TokenCode::CT_STRING(text));
                     }
                     Some(b'\n') | None => {
                         self.panic("expected '\"' maybe you forgot to close a string ?")
