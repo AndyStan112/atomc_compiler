@@ -96,6 +96,7 @@ pub struct Lexer<'a> {
     src: &'a [u8],
     pos: usize,
     line: usize,
+    line_start: usize,
     tokens: Vec<Token<'a>>,
     state: State,
 }
@@ -105,6 +106,7 @@ impl<'a> Lexer<'a> {
         Self {
             src: src.as_bytes(),
             line: 1,
+            line_start: 0,
             pos: 0,
             tokens: Vec::new(),
             state: State::START,
@@ -145,7 +147,8 @@ impl<'a> Lexer<'a> {
     }
 
     fn panic(&self, msg: &str) -> ! {
-        panic!("[{} at line {} pos {}]", msg, self.line, self.pos + 1)
+        let col = self.pos - self.line_start + 1;
+        panic!("[{} at line {} pos {}]", msg, self.line, col)
     }
 
     fn keyword_or_id(&self, s: &'a str) -> TokenCode<'a> {
@@ -192,6 +195,7 @@ impl<'a> Lexer<'a> {
                         Some(b'\n') => {
                             self.advance();
                             self.line += 1;
+                            self.line_start = self.pos;
                         }
 
                         Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
@@ -480,6 +484,7 @@ impl<'a> Lexer<'a> {
                     Some(b'\n') | None => {
                         self.state = State::START;
                         self.line += 1;
+                        self.line_start = self.pos;
                     }
                     _ => {}
                 },

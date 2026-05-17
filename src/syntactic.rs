@@ -14,10 +14,6 @@ impl<'a> Parser<'a> {
         &self.tokens[self.pos]
     }
 
-    fn at(&self, offset: usize) -> Option<&TokenCode<'a>> {
-        self.tokens.get(self.pos + offset).map(|token| &token.code)
-    }
-
     fn consume(&mut self, expected: fn(&TokenCode<'a>) -> bool) -> bool {
         if expected(&self.current().code) {
             self.pos += 1;
@@ -132,52 +128,19 @@ impl<'a> Parser<'a> {
         parts.join(" ")
     }
 
-    fn starts_type_base(&self) -> bool {
-        matches!(
-            self.current().code,
-            TokenCode::INT | TokenCode::DOUBLE | TokenCode::CHAR | TokenCode::STRUCT
-        )
-    }
-
-    fn starts_struct_def(&self) -> bool {
-        matches!(self.at(0), Some(TokenCode::STRUCT))
-            && matches!(self.at(1), Some(TokenCode::ID(_)))
-            && matches!(self.at(2), Some(TokenCode::LACC))
-    }
-
-    fn starts_stm(&self) -> bool {
-        matches!(
-            self.current().code,
-            TokenCode::LACC
-                | TokenCode::IF
-                | TokenCode::WHILE
-                | TokenCode::FOR
-                | TokenCode::BREAK
-                | TokenCode::RETURN
-                | TokenCode::SEMICOLON
-                | TokenCode::ID(_)
-                | TokenCode::CT_INT(_)
-                | TokenCode::CT_REAL(_)
-                | TokenCode::CT_CHAR(_)
-                | TokenCode::CT_STRING(_)
-                | TokenCode::LPAR
-                | TokenCode::SUB
-                | TokenCode::NOT
-        )
-    }
-
     pub fn parse(&mut self) {
         self.unit();
     }
 
     pub fn unit(&mut self) -> bool {
-        while !matches!(self.current().code, TokenCode::END) {
+        loop {
             let start_pos = self.pos;
 
-            if self.starts_struct_def() {
-                self.struct_def();
+            if self.struct_def() {
                 continue;
             }
+
+            self.pos = start_pos;
 
             if self.fn_def() {
                 continue;
@@ -190,22 +153,30 @@ impl<'a> Parser<'a> {
             }
 
             self.pos = start_pos;
+
+            if self.consume(|code| matches!(code, TokenCode::END)) {
+                return true;
+            }
+
             self.expected_error("struct definition, function definition, variable definition, or end of file");
         }
-
-        self.expect("end of file", |code| matches!(code, TokenCode::END));
-
-        true
     }
 
     pub fn struct_def(&mut self) -> bool {
-        if !self.starts_struct_def() {
+        let start_pos = self.pos;
+
+        if !self.consume(|code| matches!(code, TokenCode::STRUCT)) {
             return false;
         }
 
-        self.expect("`struct`", |code| matches!(code, TokenCode::STRUCT));
-        self.expect("struct name", |code| matches!(code, TokenCode::ID(_)));
-        self.expect("`{` after struct name", |code| matches!(code, TokenCode::LACC));
+        if !self.consume(|code| matches!(code, TokenCode::ID(_))) {
+            self.expected_error("struct name");
+        }
+
+        if !self.consume(|code| matches!(code, TokenCode::LACC)) {
+            self.pos = start_pos;
+            return false;
+        }
 
         while !matches!(self.current().code, TokenCode::RACC | TokenCode::END) {
             if !self.var_def() {
@@ -213,19 +184,25 @@ impl<'a> Parser<'a> {
             }
         }
 
-        self.expect("`}` after struct body", |code| matches!(code, TokenCode::RACC));
-        self.expect("`;` after struct definition", |code| matches!(code, TokenCode::SEMICOLON));
+        self.expect("`}` after struct body", |code| {
+            matches!(code, TokenCode::RACC)
+        });
+
+        self.expect("`;` after struct definition", |code| {
+            matches!(code, TokenCode::SEMICOLON)
+        });
 
         true
     }
 
     pub fn var_def(&mut self) -> bool {
-        if !self.starts_type_base() {
+        if !self.type_base() {
             return false;
         }
 
-        self.type_base();
-        self.expect("identifier after type", |code| matches!(code, TokenCode::ID(_)));
+        self.expect("identifier after type", |code| {
+            matches!(code, TokenCode::ID(_))
+        });
 
         self.array_decl();
 
@@ -250,7 +227,10 @@ impl<'a> Parser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::STRUCT)) {
-            self.expect("struct type name", |code| matches!(code, TokenCode::ID(_)));
+            self.expect("struct type name", |code| {
+                matches!(code, TokenCode::ID(_))
+            });
+
             return true;
         }
 
@@ -274,16 +254,26 @@ impl<'a> Parser<'a> {
     pub fn fn_def(&mut self) -> bool {
         let start_pos = self.pos;
 
-        if !(self.type_base() || self.consume(|code| matches!(code, TokenCode::VOID))) {
+        let is_void = self.consume(|code| matches!(code, TokenCode::VOID));
+
+        if !is_void && !self.type_base() {
             return false;
         }
 
         if !self.consume(|code| matches!(code, TokenCode::ID(_))) {
+            if is_void {
+                self.expected_error("function name after `void`");
+            }
+
             self.pos = start_pos;
             return false;
         }
 
         if !self.consume(|code| matches!(code, TokenCode::LPAR)) {
+            if is_void {
+                self.expected_error("`(` after function name");
+            }
+
             self.pos = start_pos;
             return false;
         }
@@ -308,12 +298,13 @@ impl<'a> Parser<'a> {
     }
 
     pub fn fn_param(&mut self) -> bool {
-        if !self.starts_type_base() {
+        if !self.type_base() {
             return false;
         }
 
-        self.type_base();
-        self.expect("parameter name", |code| matches!(code, TokenCode::ID(_)));
+        self.expect("parameter name", |code| {
+            matches!(code, TokenCode::ID(_))
+        });
 
         self.array_decl();
 
@@ -326,13 +317,17 @@ impl<'a> Parser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::IF)) {
-            self.expect("`(` after `if`", |code| matches!(code, TokenCode::LPAR));
+            self.expect("`(` after `if`", |code| {
+                matches!(code, TokenCode::LPAR)
+            });
 
             if !self.expr() {
                 self.expected_error("expression after `if (`");
             }
 
-            self.expect("`)` after if condition", |code| matches!(code, TokenCode::RPAR));
+            self.expect("`)` after if condition", |code| {
+                matches!(code, TokenCode::RPAR)
+            });
 
             if !self.stm() {
                 self.expected_error("statement after if condition");
@@ -348,7 +343,9 @@ impl<'a> Parser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::WHILE)) {
-            self.expect("`(` after `while`", |code| matches!(code, TokenCode::LPAR));
+            self.expect("`(` after `while`", |code| {
+                matches!(code, TokenCode::LPAR)
+            });
 
             if !self.expr() {
                 self.expected_error("expression after `while (`");
@@ -366,7 +363,9 @@ impl<'a> Parser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::FOR)) {
-            self.expect("`(` after `for`", |code| matches!(code, TokenCode::LPAR));
+            self.expect("`(` after `for`", |code| {
+                matches!(code, TokenCode::LPAR)
+            });
 
             self.expr();
 
@@ -382,7 +381,9 @@ impl<'a> Parser<'a> {
 
             self.expr();
 
-            self.expect("`)` after for clauses", |code| matches!(code, TokenCode::RPAR));
+            self.expect("`)` after for clauses", |code| {
+                matches!(code, TokenCode::RPAR)
+            });
 
             if !self.stm() {
                 self.expected_error("statement after for clauses");
@@ -409,10 +410,6 @@ impl<'a> Parser<'a> {
             return true;
         }
 
-        if self.consume(|code| matches!(code, TokenCode::SEMICOLON)) {
-            return true;
-        }
-
         let start_pos = self.pos;
 
         if self.expr() {
@@ -424,6 +421,11 @@ impl<'a> Parser<'a> {
         }
 
         self.pos = start_pos;
+
+        if self.consume(|code| matches!(code, TokenCode::SEMICOLON)) {
+            return true;
+        }
+
         false
     }
 
@@ -432,21 +434,21 @@ impl<'a> Parser<'a> {
             return false;
         }
 
-        while !matches!(self.current().code, TokenCode::RACC | TokenCode::END) {
-            if self.starts_type_base() {
-                self.var_def();
+        loop {
+            let start_pos = self.pos;
+
+            if self.var_def() {
                 continue;
             }
 
-            if self.starts_stm() {
-                if !self.stm() {
-                    self.expected_error("statement");
-                }
+            self.pos = start_pos;
 
+            if self.stm() {
                 continue;
             }
 
-            self.expected_error("variable declaration, statement, or `}`");
+            self.pos = start_pos;
+            break;
         }
 
         self.expect("`}` after compound statement", |code| {
@@ -474,6 +476,7 @@ impl<'a> Parser<'a> {
         }
 
         self.pos = start_pos;
+
         self.expr_or()
     }
 
@@ -570,11 +573,12 @@ impl<'a> Parser<'a> {
         let start_pos = self.pos;
 
         if self.consume(|code| matches!(code, TokenCode::LPAR)) {
-            if self.starts_type_base() {
-                self.type_base();
+            if self.type_base() {
                 self.array_decl();
 
-                self.expect("`)` after cast type", |code| matches!(code, TokenCode::RPAR));
+                self.expect("`)` after cast type", |code| {
+                    matches!(code, TokenCode::RPAR)
+                });
 
                 if !self.expr_cast() {
                     self.expected_error("expression after cast");
@@ -585,6 +589,7 @@ impl<'a> Parser<'a> {
         }
 
         self.pos = start_pos;
+
         self.expr_unary()
     }
 
@@ -619,7 +624,10 @@ impl<'a> Parser<'a> {
             }
 
             if self.consume(|code| matches!(code, TokenCode::DOT)) {
-                self.expect("field name after `.`", |code| matches!(code, TokenCode::ID(_)));
+                self.expect("field name after `.`", |code| {
+                    matches!(code, TokenCode::ID(_))
+                });
+
                 continue;
             }
 
@@ -669,7 +677,9 @@ impl<'a> Parser<'a> {
                 self.expected_error("expression after `(`");
             }
 
-            self.expect("`)` after expression", |code| matches!(code, TokenCode::RPAR));
+            self.expect("`)` after expression", |code| {
+                matches!(code, TokenCode::RPAR)
+            });
 
             return true;
         }

@@ -14,7 +14,8 @@ fn main() {
         double l;
 int main() {
     x+ 4;
-
+    x= x+4;
+    x-=x+4;
     int x;x = 10;
     int y;y = 077;
     int z;z = 0x1A2F;
