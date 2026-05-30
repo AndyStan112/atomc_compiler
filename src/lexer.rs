@@ -97,6 +97,9 @@ pub struct Lexer<'a> {
     pos: usize,
     line: usize,
     line_start: usize,
+    token_start: usize,
+    token_line: usize,
+    token_line_start: usize,
     tokens: Vec<Token<'a>>,
     state: State,
 }
@@ -107,6 +110,9 @@ impl<'a> Lexer<'a> {
             src: src.as_bytes(),
             line: 1,
             line_start: 0,
+            token_start: 0,
+            token_line: 1,
+            token_line_start: 0,
             pos: 0,
             tokens: Vec::new(),
             state: State::START,
@@ -142,13 +148,17 @@ impl<'a> Lexer<'a> {
     fn peek(&self) -> Option<u8> {
         self.src.get(self.pos).copied()
     }
+
     fn slice(&self, start: usize, end: usize) -> &'a str {
         std::str::from_utf8(&self.src[start..end]).unwrap()
     }
 
     fn panic(&self, msg: &str) -> ! {
         let col = self.pos - self.line_start + 1;
-        panic!("[{} at line {} pos {}]", msg, self.line, col)
+        panic!(
+            "\nLexical error: {}\nLine: {}, position: {}\n",
+            msg, self.line, col
+        )
     }
 
     fn keyword_or_id(&self, s: &'a str) -> TokenCode<'a> {
@@ -177,6 +187,9 @@ impl<'a> Lexer<'a> {
             match self.state {
                 State::START => {
                     start = self.pos;
+                    self.token_start = start;
+                    self.token_line = self.line;
+                    self.token_line_start = self.line_start;
 
                     match c {
                         None | Some(b'\0') => {
@@ -184,7 +197,7 @@ impl<'a> Lexer<'a> {
                             return Token {
                                 code: TokenCode::END,
                                 line: self.line,
-                                pos: self.pos,
+                                pos: self.pos - self.line_start + 1,
                             };
                         }
 
@@ -231,22 +244,27 @@ impl<'a> Lexer<'a> {
                             self.state = State::AND1;
                             self.advance();
                         }
+
                         Some(b'|') => {
                             self.state = State::OR1;
                             self.advance();
                         }
+
                         Some(b'=') => {
                             self.state = State::ASSIGN1;
                             self.advance();
                         }
+
                         Some(b'!') => {
                             self.state = State::NOT1;
                             self.advance();
                         }
+
                         Some(b'<') => {
                             self.state = State::LESS1;
                             self.advance();
                         }
+
                         Some(b'>') => {
                             self.state = State::GREATER1;
                             self.advance();
@@ -256,46 +274,57 @@ impl<'a> Lexer<'a> {
                             self.advance();
                             return self.tk(TokenCode::ADD);
                         }
+
                         Some(b'-') => {
                             self.advance();
                             return self.tk(TokenCode::SUB);
                         }
+
                         Some(b'*') => {
                             self.advance();
                             return self.tk(TokenCode::MUL);
                         }
+
                         Some(b',') => {
                             self.advance();
                             return self.tk(TokenCode::COMMA);
                         }
+
                         Some(b';') => {
                             self.advance();
                             return self.tk(TokenCode::SEMICOLON);
                         }
+
                         Some(b'(') => {
                             self.advance();
                             return self.tk(TokenCode::LPAR);
                         }
+
                         Some(b')') => {
                             self.advance();
                             return self.tk(TokenCode::RPAR);
                         }
+
                         Some(b'[') => {
                             self.advance();
                             return self.tk(TokenCode::LBRACKET);
                         }
+
                         Some(b']') => {
                             self.advance();
                             return self.tk(TokenCode::RBRACKET);
                         }
+
                         Some(b'{') => {
                             self.advance();
                             return self.tk(TokenCode::LACC);
                         }
+
                         Some(b'}') => {
                             self.advance();
                             return self.tk(TokenCode::RACC);
                         }
+
                         Some(b'.') => {
                             self.advance();
                             return self.tk(TokenCode::DOT);
@@ -384,7 +413,9 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_INT(i64::from_str_radix(text.strip_prefix("0x").unwrap(), 16).unwrap(),));
+                            return self.tk(TokenCode::CT_INT(
+                                i64::from_str_radix(text.strip_prefix("0x").unwrap(), 16).unwrap(),
+                            ));
                         }
                     };
                 }
@@ -445,7 +476,7 @@ impl<'a> Lexer<'a> {
 
                 State::STRING => match self.advance() {
                     Some(b'"') => {
-                        let text = self.slice(start + 1, self.pos -1);
+                        let text = self.slice(start + 1, self.pos - 1);
                         self.state = State::START;
                         return self.tk(TokenCode::CT_STRING(text));
                     }
@@ -481,10 +512,13 @@ impl<'a> Lexer<'a> {
                 },
 
                 State::LINE_COMMENT => match self.advance() {
-                    Some(b'\n') | None => {
+                    Some(b'\n') => {
                         self.state = State::START;
                         self.line += 1;
                         self.line_start = self.pos;
+                    }
+                    None => {
+                        self.state = State::START;
                     }
                     _ => {}
                 },
@@ -563,8 +597,8 @@ impl<'a> Lexer<'a> {
     fn tk(&self, code: TokenCode<'a>) -> Token<'a> {
         Token {
             code,
-            line: self.line,
-            pos: self.pos,
+            line: self.token_line,
+            pos: self.token_start - self.token_line_start + 1,
         }
     }
 }
