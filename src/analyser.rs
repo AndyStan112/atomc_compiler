@@ -16,6 +16,22 @@ pub struct Type<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum CtVal<'a> {
+    Int(i64),
+    Double(f64),
+    Char(char),
+    Str(&'a str),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RetVal<'a> {
+    pub typ: Type<'a>,
+    pub is_lval: bool,
+    pub is_ct_val: bool,
+    pub ct_val: Option<CtVal<'a>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum SymbolKind {
     Var,
     Fn,
@@ -83,6 +99,7 @@ pub struct Analyser<'a> {
     anonymous_scope_counter: usize,
     last_type: Option<Type<'a>>,
     last_array_decl_present: bool,
+    last_retval: Option<RetVal<'a>>,
 }
 
 pub type Parser<'a> = Analyser<'a>;
@@ -105,6 +122,7 @@ impl<'a> Analyser<'a> {
             anonymous_scope_counter: 0,
             last_type: None,
             last_array_decl_present: false,
+            last_retval: None,
         }
     }
 
@@ -149,6 +167,169 @@ impl<'a> Analyser<'a> {
     #[allow(dead_code)]
     fn type_error_at(&self, token_pos: usize, message: String) -> ! {
         self.error_at(ErrorKind::Type, token_pos, message)
+    }
+
+
+    fn create_type(&self, tb: TypeBase<'a>, n: i64) -> Type<'a> {
+        Type { tb, n }
+    }
+
+    fn create_retval(&self, typ: Type<'a>, is_lval: bool, is_ct_val: bool) -> RetVal<'a> {
+        RetVal {
+            typ,
+            is_lval,
+            is_ct_val,
+            ct_val: None,
+        }
+    }
+
+    fn int_type(&self) -> Type<'a> {
+        self.create_type(TypeBase::Int, -1)
+    }
+
+    fn can_be_scalar(&self, rv: &RetVal<'a>) -> bool {
+        rv.typ.n < 0 && matches!(rv.typ.tb, TypeBase::Char | TypeBase::Int | TypeBase::Double)
+    }
+
+    fn same_base_type(&self, dst: &Type<'a>, src: &Type<'a>) -> bool {
+        match (&dst.tb, &src.tb) {
+            (TypeBase::Int, TypeBase::Int)
+            | (TypeBase::Double, TypeBase::Double)
+            | (TypeBase::Char, TypeBase::Char)
+            | (TypeBase::Void, TypeBase::Void) => true,
+            (TypeBase::Struct(dst_name), TypeBase::Struct(src_name)) => dst_name == src_name,
+            _ => false,
+        }
+    }
+
+    fn conv_to(&self, src: &Type<'a>, dst: &Type<'a>) -> bool {
+        if src.n >= 0 {
+            return dst.n >= 0 && self.same_base_type(dst, src);
+        }
+
+        if dst.n >= 0 {
+            return false;
+        }
+
+        match (&src.tb, &dst.tb) {
+            (TypeBase::Char | TypeBase::Int | TypeBase::Double, TypeBase::Char | TypeBase::Int | TypeBase::Double) => true,
+            (TypeBase::Struct(src_name), TypeBase::Struct(dst_name)) => src_name == dst_name,
+            _ => false,
+        }
+    }
+
+    fn cast(&self, dst: &Type<'a>, src: &Type<'a>, token_pos: usize) {
+        if src.n >= 0 {
+            if dst.n >= 0 {
+                if !self.same_base_type(dst, src) {
+                    self.type_error_at(token_pos, "an array cannot be converted to an array of another type".to_string());
+                }
+            } else {
+                self.type_error_at(token_pos, "an array cannot be converted to a non-array".to_string());
+            }
+        } else if dst.n >= 0 {
+            self.type_error_at(token_pos, "a non-array cannot be converted to an array".to_string());
+        }
+
+        if !self.conv_to(src, dst) {
+            self.type_error_at(token_pos, "incompatible types".to_string());
+        }
+    }
+
+    fn get_arith_type(&self, s1: &Type<'a>, s2: &Type<'a>, token_pos: usize) -> Type<'a> {
+        if s1.n >= 0 || s2.n >= 0 {
+            self.type_error_at(token_pos, "invalid array operand".to_string());
+        }
+
+        match (&s1.tb, &s2.tb) {
+            (TypeBase::Double, TypeBase::Char | TypeBase::Int | TypeBase::Double)
+            | (TypeBase::Char | TypeBase::Int | TypeBase::Double, TypeBase::Double) => self.create_type(TypeBase::Double, -1),
+            (TypeBase::Int, TypeBase::Char | TypeBase::Int)
+            | (TypeBase::Char, TypeBase::Int) => self.create_type(TypeBase::Int, -1),
+            (TypeBase::Char, TypeBase::Char) => self.create_type(TypeBase::Char, -1),
+            _ => self.type_error_at(token_pos, "invalid arithmetic operand type".to_string()),
+        }
+    }
+
+    fn current_function_type(&self) -> Option<Type<'a>> {
+        let name = match self.owner {
+            Some(Owner::Fn(name)) => name,
+            _ => return None,
+        };
+
+        for scope in &self.scopes {
+            for symbol in &scope.symbols {
+                if symbol.name == name && symbol.kind == SymbolKind::Fn {
+                    return Some(symbol.typ.clone());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn find_struct_member(&self, struct_name: &str, field_name: &str) -> Option<Symbol<'a>> {
+        for scope in &self.scopes {
+            for symbol in &scope.symbols {
+                if symbol.name == struct_name && symbol.kind == SymbolKind::Struct {
+                    return symbol.members.iter().find(|member| member.name == field_name).cloned();
+                }
+            }
+        }
+
+        None
+    }
+
+    fn add_ext_func(&mut self, name: &'a str, typ: Type<'a>) {
+        let symbol = self.new_symbol(name, SymbolKind::Fn, MemoryKind::Global, typ);
+        self.add_symbol_to_current_scope(symbol);
+    }
+
+    fn add_func_arg(&mut self, func_name: &'a str, name: &'a str, typ: Type<'a>) {
+        if let Some(func) = self.find_symbol_mut_anywhere(func_name, SymbolKind::Fn) {
+            let mut arg = Symbol {
+                name,
+                kind: SymbolKind::Param,
+                memory: MemoryKind::Arg,
+                typ,
+                var_idx: 0,
+                param_idx: func.params.len(),
+                params: Vec::new(),
+                members: Vec::new(),
+            };
+
+            arg.param_idx = func.params.len();
+            func.params.push(arg);
+        }
+    }
+
+    pub fn add_ext_funcs(&mut self) {
+        if self.find_symbol_in_current_scope("put_s").is_some() {
+            return;
+        }
+
+        self.add_ext_func("put_s", self.create_type(TypeBase::Void, -1));
+        self.add_func_arg("put_s", "s", self.create_type(TypeBase::Char, 0));
+
+        self.add_ext_func("get_s", self.create_type(TypeBase::Void, -1));
+        self.add_func_arg("get_s", "s", self.create_type(TypeBase::Char, 0));
+
+        self.add_ext_func("put_i", self.create_type(TypeBase::Void, -1));
+        self.add_func_arg("put_i", "i", self.create_type(TypeBase::Int, -1));
+
+        self.add_ext_func("get_i", self.create_type(TypeBase::Int, -1));
+
+        self.add_ext_func("put_d", self.create_type(TypeBase::Void, -1));
+        self.add_func_arg("put_d", "d", self.create_type(TypeBase::Double, -1));
+
+        self.add_ext_func("get_d", self.create_type(TypeBase::Double, -1));
+
+        self.add_ext_func("put_c", self.create_type(TypeBase::Void, -1));
+        self.add_func_arg("put_c", "c", self.create_type(TypeBase::Char, -1));
+
+        self.add_ext_func("get_c", self.create_type(TypeBase::Char, -1));
+
+        self.add_ext_func("seconds", self.create_type(TypeBase::Double, -1));
     }
 
     fn error_at(&self, kind: ErrorKind, token_pos: usize, message: String) -> ! {
@@ -507,6 +688,7 @@ impl<'a> Analyser<'a> {
     }
 
     pub fn parse(&mut self) {
+        self.add_ext_funcs();
         self.unit();
     }
 
@@ -854,12 +1036,19 @@ impl<'a> Analyser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::IF)) {
+            let cond_pos = self.pos;
+
             self.expect("`(` after `if`", |code| {
                 matches!(code, TokenCode::LPAR)
             });
 
             if !self.expr() {
                 self.expected_error("expression after `if (`");
+            }
+
+            let cond = self.last_retval.clone().unwrap();
+            if !self.can_be_scalar(&cond) {
+                self.type_error_at(cond_pos, "the if condition must be a scalar value".to_string());
             }
 
             self.expect("`)` after if condition", |code| {
@@ -880,12 +1069,19 @@ impl<'a> Analyser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::WHILE)) {
+            let cond_pos = self.pos;
+
             self.expect("`(` after `while`", |code| {
                 matches!(code, TokenCode::LPAR)
             });
 
             if !self.expr() {
                 self.expected_error("expression after `while (`");
+            }
+
+            let cond = self.last_retval.clone().unwrap();
+            if !self.can_be_scalar(&cond) {
+                self.type_error_at(cond_pos, "the while condition must be a scalar value".to_string());
             }
 
             self.expect("`)` after while condition", |code| {
@@ -910,7 +1106,13 @@ impl<'a> Analyser<'a> {
                 matches!(code, TokenCode::SEMICOLON)
             });
 
-            self.expr();
+            let cond_pos = self.pos;
+            if self.expr() {
+                let cond = self.last_retval.clone().unwrap();
+                if !self.can_be_scalar(&cond) {
+                    self.type_error_at(cond_pos, "the for condition must be a scalar value".to_string());
+                }
+            }
 
             self.expect("second `;` in for statement", |code| {
                 matches!(code, TokenCode::SEMICOLON)
@@ -938,7 +1140,27 @@ impl<'a> Analyser<'a> {
         }
 
         if self.consume(|code| matches!(code, TokenCode::RETURN)) {
-            self.expr();
+            let return_pos = self.pos;
+            let has_expr = self.expr();
+            let fn_type = self.current_function_type().unwrap_or_else(|| self.create_type(TypeBase::Void, -1));
+
+            if has_expr {
+                let expr = self.last_retval.clone().unwrap();
+
+                if matches!(fn_type.tb, TypeBase::Void) {
+                    self.type_error_at(return_pos, "a void function cannot return a value".to_string());
+                }
+
+                if !self.can_be_scalar(&expr) {
+                    self.type_error_at(return_pos, "the return value must be a scalar value".to_string());
+                }
+
+                if !self.conv_to(&expr.typ, &fn_type) {
+                    self.type_error_at(return_pos, "cannot convert the return expression type to the function return type".to_string());
+                }
+            } else if !matches!(fn_type.tb, TypeBase::Void) {
+                self.type_error_at(return_pos, "a non-void function must return a value".to_string());
+            }
 
             self.expect("`;` after `return` statement", |code| {
                 matches!(code, TokenCode::SEMICOLON)
@@ -1016,10 +1238,38 @@ impl<'a> Analyser<'a> {
         let start_pos = self.pos;
 
         if self.expr_unary() {
+            let dst = self.last_retval.clone().unwrap();
+            let assign_pos = self.pos;
+
             if self.consume(|code| matches!(code, TokenCode::ASSIGN)) {
                 if !self.expr_assign() {
                     self.expected_error("expression after `=`");
                 }
+
+                let src = self.last_retval.clone().unwrap();
+
+                if !dst.is_lval {
+                    self.type_error_at(assign_pos, "the assign destination must be a left-value".to_string());
+                }
+
+                if dst.is_ct_val {
+                    self.type_error_at(assign_pos, "the assign destination cannot be constant".to_string());
+                }
+
+                if !self.can_be_scalar(&dst) {
+                    self.type_error_at(assign_pos, "the assign destination must be scalar".to_string());
+                }
+
+                if !self.can_be_scalar(&src) {
+                    self.type_error_at(assign_pos, "the assign source must be scalar".to_string());
+                }
+
+                self.cast(&dst.typ, &src.typ, assign_pos);
+
+                let mut rv = src;
+                rv.is_lval = false;
+                rv.is_ct_val = true;
+                self.last_retval = Some(rv);
 
                 return true;
             }
@@ -1036,9 +1286,16 @@ impl<'a> Analyser<'a> {
         }
 
         while self.consume(|code| matches!(code, TokenCode::OR)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_and() {
                 self.expected_error("expression after `||`");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(self.int_type(), false, true));
         }
 
         true
@@ -1050,9 +1307,16 @@ impl<'a> Analyser<'a> {
         }
 
         while self.consume(|code| matches!(code, TokenCode::AND)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_eq() {
                 self.expected_error("expression after `&&`");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(self.int_type(), false, true));
         }
 
         true
@@ -1064,9 +1328,16 @@ impl<'a> Analyser<'a> {
         }
 
         while self.consume(|code| matches!(code, TokenCode::EQUAL | TokenCode::NOTEQ)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_rel() {
                 self.expected_error("expression after equality operator");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(self.int_type(), false, true));
         }
 
         true
@@ -1083,9 +1354,16 @@ impl<'a> Analyser<'a> {
                 TokenCode::LESS | TokenCode::LESSEQ | TokenCode::GREATER | TokenCode::GREATEREQ
             )
         }) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_add() {
                 self.expected_error("expression after relational operator");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(self.int_type(), false, true));
         }
 
         true
@@ -1097,9 +1375,16 @@ impl<'a> Analyser<'a> {
         }
 
         while self.consume(|code| matches!(code, TokenCode::ADD | TokenCode::SUB)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_mul() {
                 self.expected_error("expression after `+` or `-`");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            let typ = self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(typ, false, true));
         }
 
         true
@@ -1111,9 +1396,16 @@ impl<'a> Analyser<'a> {
         }
 
         while self.consume(|code| matches!(code, TokenCode::MUL | TokenCode::DIV)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let left = self.last_retval.clone().unwrap();
+
             if !self.expr_cast() {
                 self.expected_error("expression after `*` or `/`");
             }
+
+            let right = self.last_retval.clone().unwrap();
+            let typ = self.get_arith_type(&left.typ, &right.typ, op_pos);
+            self.last_retval = Some(self.create_retval(typ, false, true));
         }
 
         true
@@ -1123,8 +1415,11 @@ impl<'a> Analyser<'a> {
         let start_pos = self.pos;
 
         if self.consume(|code| matches!(code, TokenCode::LPAR)) {
+            let cast_pos = self.pos.saturating_sub(1);
+
             if self.type_base() {
                 self.array_decl();
+                let typ = self.last_type.clone().unwrap();
 
                 self.expect("`)` after cast type", |code| {
                     matches!(code, TokenCode::RPAR)
@@ -1133,6 +1428,26 @@ impl<'a> Analyser<'a> {
                 if !self.expr_cast() {
                     self.expected_error("expression after cast");
                 }
+
+                let op = self.last_retval.clone().unwrap();
+
+                if matches!(typ.tb, TypeBase::Struct(_)) {
+                    self.type_error_at(cast_pos, "cannot convert to a struct type".to_string());
+                }
+
+                if matches!(op.typ.tb, TypeBase::Struct(_)) {
+                    self.type_error_at(cast_pos, "cannot convert a struct".to_string());
+                }
+
+                if op.typ.n >= 0 && typ.n < 0 {
+                    self.type_error_at(cast_pos, "an array can be converted only to another array".to_string());
+                }
+
+                if op.typ.n < 0 && typ.n >= 0 {
+                    self.type_error_at(cast_pos, "a scalar can be converted only to another scalar".to_string());
+                }
+
+                self.last_retval = Some(self.create_retval(typ, false, true));
 
                 return true;
             }
@@ -1145,9 +1460,27 @@ impl<'a> Analyser<'a> {
 
     pub fn expr_unary(&mut self) -> bool {
         if self.consume(|code| matches!(code, TokenCode::SUB | TokenCode::NOT)) {
+            let op_pos = self.pos.saturating_sub(1);
+            let is_not = matches!(self.tokens[op_pos].code, TokenCode::NOT);
+
             if !self.expr_unary() {
                 self.expected_error("expression after unary operator");
             }
+
+            let mut rv = self.last_retval.clone().unwrap();
+
+            if !self.can_be_scalar(&rv) {
+                self.type_error_at(op_pos, "unary operator must have a scalar operand".to_string());
+            }
+
+            if is_not {
+                rv.typ = self.int_type();
+            }
+
+            rv.is_lval = false;
+            rv.is_ct_val = true;
+            rv.ct_val = None;
+            self.last_retval = Some(rv);
 
             return true;
         }
@@ -1162,21 +1495,62 @@ impl<'a> Analyser<'a> {
 
         loop {
             if self.consume(|code| matches!(code, TokenCode::LBRACKET)) {
+                let index_pos = self.pos.saturating_sub(1);
+                let mut rv = self.last_retval.clone().unwrap();
+
                 if !self.expr() {
                     self.expected_error("expression inside `[` `]`");
                 }
+
+                let idx = self.last_retval.clone().unwrap();
 
                 self.expect("`]` after index expression", |code| {
                     matches!(code, TokenCode::RBRACKET)
                 });
 
+                if rv.typ.n < 0 {
+                    self.type_error_at(index_pos, "only an array can be indexed".to_string());
+                }
+
+                if !self.conv_to(&idx.typ, &self.int_type()) {
+                    self.type_error_at(index_pos, "the index is not convertible to int".to_string());
+                }
+
+                rv.typ.n = -1;
+                rv.is_lval = true;
+                rv.is_ct_val = false;
+                rv.ct_val = None;
+                self.last_retval = Some(rv);
+
                 continue;
             }
 
             if self.consume(|code| matches!(code, TokenCode::DOT)) {
+                let dot_pos = self.pos.saturating_sub(1);
+                let field_pos = self.pos;
+
                 self.expect("field name after `.`", |code| {
                     matches!(code, TokenCode::ID(_))
                 });
+
+                let mut rv = self.last_retval.clone().unwrap();
+                let field_name = self.id_name_at(field_pos);
+
+                let struct_name = match rv.typ.tb {
+                    TypeBase::Struct(name) => name,
+                    _ => self.type_error_at(dot_pos, "a field can only be selected from a struct".to_string()),
+                };
+
+                let member = match self.find_struct_member(struct_name, field_name) {
+                    Some(member) => member,
+                    None => self.type_error_at(field_pos, format!("the structure {} does not have a field {}", struct_name, field_name)),
+                };
+
+                rv.typ = member.typ;
+                rv.is_lval = true;
+                rv.is_ct_val = rv.typ.n >= 0;
+                rv.ct_val = None;
+                self.last_retval = Some(rv);
 
                 continue;
             }
@@ -1192,41 +1566,114 @@ impl<'a> Analyser<'a> {
 
         if self.consume(|code| matches!(code, TokenCode::ID(_))) {
             let name = self.id_name_at(name_pos);
-
-            if self.find_symbol(name).is_none() {
-                self.domain_error_at(name_pos, format!("undefined symbol: {}", name));
-            }
+            let symbol = match self.find_symbol(name) {
+                Some(symbol) => symbol.clone(),
+                None => self.domain_error_at(name_pos, format!("undefined symbol: {}", name)),
+            };
 
             if self.consume(|code| matches!(code, TokenCode::LPAR)) {
+                if symbol.kind != SymbolKind::Fn {
+                    self.type_error_at(name_pos, "only a function can be called".to_string());
+                }
+
+                let mut param_idx = 0;
+
                 if self.expr() {
+                    let arg = self.last_retval.clone().unwrap();
+
+                    if param_idx >= symbol.params.len() {
+                        self.type_error_at(name_pos, "too many arguments in function call".to_string());
+                    }
+
+                    if !self.conv_to(&arg.typ, &symbol.params[param_idx].typ) {
+                        self.type_error_at(name_pos, "in call, cannot convert the argument type to the parameter type".to_string());
+                    }
+
+                    param_idx += 1;
+
                     while self.consume(|code| matches!(code, TokenCode::COMMA)) {
                         if !self.expr() {
                             self.expected_error("expression after `,`");
                         }
+
+                        let arg = self.last_retval.clone().unwrap();
+
+                        if param_idx >= symbol.params.len() {
+                            self.type_error_at(name_pos, "too many arguments in function call".to_string());
+                        }
+
+                        if !self.conv_to(&arg.typ, &symbol.params[param_idx].typ) {
+                            self.type_error_at(name_pos, "in call, cannot convert the argument type to the parameter type".to_string());
+                        }
+
+                        param_idx += 1;
                     }
                 }
 
                 self.expect("`)` after function call arguments", |code| {
                     matches!(code, TokenCode::RPAR)
                 });
+
+                if param_idx < symbol.params.len() {
+                    self.type_error_at(name_pos, "too few arguments in function call".to_string());
+                }
+
+                self.last_retval = Some(self.create_retval(symbol.typ, false, true));
+            } else {
+                if symbol.kind == SymbolKind::Fn {
+                    self.type_error_at(name_pos, "a function can only be called".to_string());
+                }
+
+                let is_ct_val = symbol.typ.n >= 0;
+                self.last_retval = Some(self.create_retval(symbol.typ, true, is_ct_val));
             }
 
             return true;
         }
 
+        let token_pos = self.pos;
+
         if self.consume(|code| matches!(code, TokenCode::CT_INT(_))) {
+            let value = match self.tokens[token_pos].code {
+                TokenCode::CT_INT(value) => value,
+                _ => 0,
+            };
+            let mut rv = self.create_retval(self.int_type(), false, true);
+            rv.ct_val = Some(CtVal::Int(value));
+            self.last_retval = Some(rv);
             return true;
         }
 
         if self.consume(|code| matches!(code, TokenCode::CT_REAL(_))) {
+            let value = match self.tokens[token_pos].code {
+                TokenCode::CT_REAL(value) => value,
+                _ => 0.0,
+            };
+            let mut rv = self.create_retval(self.create_type(TypeBase::Double, -1), false, true);
+            rv.ct_val = Some(CtVal::Double(value));
+            self.last_retval = Some(rv);
             return true;
         }
 
         if self.consume(|code| matches!(code, TokenCode::CT_CHAR(_))) {
+            let value = match self.tokens[token_pos].code {
+                TokenCode::CT_CHAR(value) => value,
+                _ => '\0',
+            };
+            let mut rv = self.create_retval(self.create_type(TypeBase::Char, -1), false, true);
+            rv.ct_val = Some(CtVal::Char(value));
+            self.last_retval = Some(rv);
             return true;
         }
 
         if self.consume(|code| matches!(code, TokenCode::CT_STRING(_))) {
+            let value = match self.tokens[token_pos].code {
+                TokenCode::CT_STRING(value) => value,
+                _ => "",
+            };
+            let mut rv = self.create_retval(self.create_type(TypeBase::Char, 0), false, true);
+            rv.ct_val = Some(CtVal::Str(value));
+            self.last_retval = Some(rv);
             return true;
         }
 
@@ -1243,5 +1690,351 @@ impl<'a> Analyser<'a> {
         }
 
         false
+    }
+
+}
+
+#[cfg(test)]
+mod type_analysis_tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    fn tk(code: TokenCode<'static>) -> Token<'static> {
+        Token { code, line: 1, pos: 1 }
+    }
+
+    fn id(name: &'static str) -> Token<'static> {
+        tk(TokenCode::ID(name))
+    }
+
+    fn i(value: i64) -> Token<'static> {
+        tk(TokenCode::CT_INT(value))
+    }
+
+    fn d(value: f64) -> Token<'static> {
+        tk(TokenCode::CT_REAL(value))
+    }
+
+    fn c(value: char) -> Token<'static> {
+        tk(TokenCode::CT_CHAR(value))
+    }
+
+    fn s(value: &'static str) -> Token<'static> {
+        tk(TokenCode::CT_STRING(value))
+    }
+
+    fn parses(tokens: Vec<Token<'static>>) {
+        let mut analyser = Analyser::new(&tokens);
+        analyser.parse();
+    }
+
+    fn parse_panics(tokens: Vec<Token<'static>>) -> String {
+        let result = catch_unwind(AssertUnwindSafe(|| parses(tokens)));
+
+        match result {
+            Ok(_) => panic!("expected analyser to panic"),
+            Err(payload) => {
+                if let Some(message) = payload.downcast_ref::<String>() {
+                    message.clone()
+                } else if let Some(message) = payload.downcast_ref::<&str>() {
+                    message.to_string()
+                } else {
+                    String::new()
+                }
+            }
+        }
+    }
+
+    fn assert_type_error(tokens: Vec<Token<'static>>, expected: &str) {
+        let message = parse_panics(tokens);
+        assert!(message.contains("Type error"), "{}", message);
+        assert!(message.contains(expected), "{}", message);
+    }
+
+    fn assert_domain_error(tokens: Vec<Token<'static>>, expected: &str) {
+        let message = parse_panics(tokens);
+        assert!(message.contains("Domain error"), "{}", message);
+        assert!(message.contains(expected), "{}", message);
+    }
+
+    fn abs_function_tokens() -> Vec<Token<'static>> {
+        vec![
+            tk(TokenCode::DOUBLE), id("abs"), tk(TokenCode::LPAR), tk(TokenCode::DOUBLE), id("x"), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::IF), tk(TokenCode::LPAR), id("x"), tk(TokenCode::LESS), i(0), tk(TokenCode::RPAR),
+            tk(TokenCode::RETURN), tk(TokenCode::SUB), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+        ]
+    }
+
+    fn main_prefix() -> Vec<Token<'static>> {
+        vec![
+            tk(TokenCode::INT), id("main"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+        ]
+    }
+
+    fn main_suffix() -> Vec<Token<'static>> {
+        vec![
+            tk(TokenCode::RETURN), i(0), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ]
+    }
+
+    fn program_with_main(body: Vec<Token<'static>>) -> Vec<Token<'static>> {
+        let mut tokens = Vec::new();
+        tokens.extend(main_prefix());
+        tokens.extend(body);
+        tokens.extend(main_suffix());
+        tokens
+    }
+
+    fn program_with_abs_and_main(body: Vec<Token<'static>>) -> Vec<Token<'static>> {
+        let mut tokens = abs_function_tokens();
+        tokens.extend(main_prefix());
+        tokens.extend(body);
+        tokens.extend(main_suffix());
+        tokens
+    }
+
+    #[test]
+    fn accepts_valid_scalar_assignments_and_function_call() {
+        parses(program_with_abs_and_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::DOUBLE), id("r"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+            id("r"), tk(TokenCode::ASSIGN), id("abs"), tk(TokenCode::LPAR), d(0.5), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+            id("put_i"), tk(TokenCode::LPAR), id("a"), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+            id("put_d"), tk(TokenCode::LPAR), id("r"), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]));
+    }
+
+    #[test]
+    fn accepts_valid_arrays_struct_fields_and_char_strings() {
+        let tokens = vec![
+            tk(TokenCode::STRUCT), id("Point"), tk(TokenCode::LACC),
+            tk(TokenCode::INT), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::DOUBLE), id("y"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::VOID), id("set"), tk(TokenCode::LPAR), tk(TokenCode::CHAR), id("text"), tk(TokenCode::LBRACKET), tk(TokenCode::RBRACKET), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            id("put_s"), tk(TokenCode::LPAR), id("text"), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::INT), id("main"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::CHAR), id("text"), tk(TokenCode::LBRACKET), i(8), tk(TokenCode::RBRACKET), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::STRUCT), id("Point"), id("p"), tk(TokenCode::SEMICOLON),
+            id("text"), tk(TokenCode::LBRACKET), i(0), tk(TokenCode::RBRACKET), tk(TokenCode::ASSIGN), c('a'), tk(TokenCode::SEMICOLON),
+            id("p"), tk(TokenCode::DOT), id("x"), tk(TokenCode::ASSIGN), i(3), tk(TokenCode::SEMICOLON),
+            id("set"), tk(TokenCode::LPAR), id("text"), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), i(0), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        parses(tokens);
+    }
+
+    #[test]
+    fn rejects_assigning_to_rvalue() {
+        assert_type_error(program_with_main(vec![
+            i(2), tk(TokenCode::ASSIGN), i(3), tk(TokenCode::SEMICOLON),
+        ]), "the assign destination must be a left-value");
+    }
+
+    #[test]
+    fn rejects_assigning_to_function_name() {
+        assert_type_error(program_with_abs_and_main(vec![
+            id("abs"), tk(TokenCode::ASSIGN), i(0), tk(TokenCode::SEMICOLON),
+        ]), "a function can only be called");
+    }
+
+    #[test]
+    fn rejects_array_used_as_scalar_assignment_destination() {
+        assert_type_error(program_with_main(vec![
+            tk(TokenCode::INT), id("v"), tk(TokenCode::LBRACKET), i(10), tk(TokenCode::RBRACKET), tk(TokenCode::SEMICOLON),
+            id("v"), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+        ]), "the assign destination cannot be constant");
+    }
+
+    #[test]
+    fn rejects_too_many_function_arguments() {
+        assert_type_error(program_with_abs_and_main(vec![
+            tk(TokenCode::DOUBLE), id("r"), tk(TokenCode::SEMICOLON),
+            id("r"), tk(TokenCode::ASSIGN), id("abs"), tk(TokenCode::LPAR), d(0.5), tk(TokenCode::COMMA), d(0.7), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]), "too many arguments in function call");
+    }
+
+    #[test]
+    fn rejects_too_few_function_arguments() {
+        assert_type_error(program_with_abs_and_main(vec![
+            tk(TokenCode::DOUBLE), id("r"), tk(TokenCode::SEMICOLON),
+            id("r"), tk(TokenCode::ASSIGN), id("abs"), tk(TokenCode::LPAR), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]), "too few arguments in function call");
+    }
+
+    #[test]
+    fn rejects_calling_non_function() {
+        assert_type_error(program_with_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::LPAR), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]), "only a function can be called");
+    }
+
+    #[test]
+    fn rejects_indexing_non_array() {
+        assert_type_error(program_with_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::LBRACKET), i(0), tk(TokenCode::RBRACKET), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+        ]), "only an array can be indexed");
+    }
+
+    #[test]
+    fn rejects_selecting_field_from_non_struct() {
+        assert_type_error(program_with_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::DOT), id("x"), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+        ]), "a field can only be selected from a struct");
+    }
+
+    #[test]
+    fn rejects_missing_struct_field() {
+        let tokens = vec![
+            tk(TokenCode::STRUCT), id("Point"), tk(TokenCode::LACC),
+            tk(TokenCode::INT), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("main"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::STRUCT), id("Point"), id("p"), tk(TokenCode::SEMICOLON),
+            id("p"), tk(TokenCode::DOT), id("y"), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), i(0), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "does not have a field y");
+    }
+
+    #[test]
+    fn rejects_array_operand_in_arithmetic_expression() {
+        assert_type_error(program_with_main(vec![
+            tk(TokenCode::INT), id("v"), tk(TokenCode::LBRACKET), i(10), tk(TokenCode::RBRACKET), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), id("v"), tk(TokenCode::ADD), i(1), tk(TokenCode::SEMICOLON),
+        ]), "invalid array operand");
+    }
+
+    #[test]
+    fn rejects_struct_operand_in_arithmetic_expression() {
+        let tokens = vec![
+            tk(TokenCode::STRUCT), id("Point"), tk(TokenCode::LACC),
+            tk(TokenCode::INT), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("main"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::STRUCT), id("Point"), id("p"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), id("p"), tk(TokenCode::ADD), i(1), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), i(0), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "invalid arithmetic operand type");
+    }
+
+    #[test]
+    fn rejects_void_function_returning_value() {
+        let tokens = vec![
+            tk(TokenCode::VOID), id("f"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::RETURN), i(1), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "a void function cannot return a value");
+    }
+
+    #[test]
+    fn rejects_non_void_function_without_return_value() {
+        let tokens = vec![
+            tk(TokenCode::INT), id("f"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::RETURN), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "a non-void function must return a value");
+    }
+
+    #[test]
+    fn rejects_returning_array_value() {
+        let tokens = vec![
+            tk(TokenCode::INT), id("f"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::INT), id("v"), tk(TokenCode::LBRACKET), i(4), tk(TokenCode::RBRACKET), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), id("v"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "the return value must be a scalar value");
+    }
+
+    #[test]
+    fn rejects_array_argument_passed_to_scalar_parameter() {
+        assert_type_error(program_with_abs_and_main(vec![
+            tk(TokenCode::INT), id("v"), tk(TokenCode::LBRACKET), i(10), tk(TokenCode::RBRACKET), tk(TokenCode::SEMICOLON),
+            id("abs"), tk(TokenCode::LPAR), id("v"), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]), "in call, cannot convert the argument type to the parameter type");
+    }
+
+    #[test]
+    fn rejects_undefined_symbol() {
+        assert_domain_error(program_with_main(vec![
+            id("missing"), tk(TokenCode::ASSIGN), i(1), tk(TokenCode::SEMICOLON),
+        ]), "undefined symbol: missing");
+    }
+
+    #[test]
+    fn accepts_cast_between_scalar_numeric_types() {
+        parses(program_with_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), d(1.5), tk(TokenCode::SEMICOLON),
+        ]));
+    }
+
+    #[test]
+    fn rejects_casting_struct_to_int() {
+        let tokens = vec![
+            tk(TokenCode::STRUCT), id("Point"), tk(TokenCode::LACC),
+            tk(TokenCode::INT), id("x"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("main"), tk(TokenCode::LPAR), tk(TokenCode::RPAR),
+            tk(TokenCode::LACC),
+            tk(TokenCode::STRUCT), id("Point"), id("p"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), id("p"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RETURN), i(0), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::RACC),
+            tk(TokenCode::END),
+        ];
+
+        assert_type_error(tokens, "source must be scalar");
+    }
+
+    #[test]
+    fn accepts_predefined_zero_argument_functions() {
+        parses(program_with_main(vec![
+            tk(TokenCode::INT), id("a"), tk(TokenCode::SEMICOLON),
+            tk(TokenCode::DOUBLE), id("seconds_value"), tk(TokenCode::SEMICOLON),
+            id("a"), tk(TokenCode::ASSIGN), id("get_i"), tk(TokenCode::LPAR), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+            id("seconds_value"), tk(TokenCode::ASSIGN), id("seconds"), tk(TokenCode::LPAR), tk(TokenCode::RPAR), tk(TokenCode::SEMICOLON),
+        ]));
     }
 }
