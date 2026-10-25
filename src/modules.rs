@@ -209,31 +209,7 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    struct Tree(PathBuf);
-    impl Tree {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "atomc-modules-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&root).unwrap();
-            Self(root)
-        }
-        fn write(&self, path: &str, text: &str) -> PathBuf {
-            let path = self.0.join(path);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, text).unwrap();
-            path
-        }
-    }
-    impl Drop for Tree {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support::Project as Tree;
     fn error(entry: &Path) -> String {
         load(entry).err().expect("expected loader error")
     }

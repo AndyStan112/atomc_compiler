@@ -2,9 +2,11 @@
 use crate::analyser::Analyser;
 use crate::builtins;
 use crate::layout::{self, Structs, Ty};
-use crate::lexer::{Lexer, Token, TokenCode as T};
+use crate::lexer::{Token, TokenCode as T};
+use crate::modules;
 use crate::vm::{ExtFunc, InstrArg, Instructions, Opcode as O, Vm, GLOBAL_SIZE};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 type Result<T> = std::result::Result<T, String>;
 #[derive(Debug, Clone)]
@@ -34,6 +36,7 @@ enum Stmt {
     Empty,
 }
 struct Function {
+    location: String,
     name: String,
     ret: Ty,
     params: Vec<(String, Ty)>,
@@ -727,17 +730,60 @@ pub fn compile(source: &str) -> Result<Program> {
 }
 
 fn compile_named(source: &str, name: &str) -> Result<Program> {
-    if source.len() > 1024 * 1024 {
+    if source.len() > modules::MAX_SOURCE_BYTES {
         return Err(format!("{name}: source exceeds 1 MiB"));
     }
-    crate::diagnostic::catch(|| compile_inner(source, name))
+    let tokens = modules::lex(source, name)?;
+    if let Some(import) = tokens
+        .windows(2)
+        .find(|pair| pair[0].code == T::IMPORT && matches!(pair[1].code, T::CT_STRING(_)))
+    {
+        return Err(format!(
+            "{}: source imports require a file compilation entry point",
+            import[0].location()
+        ));
+    }
+    crate::diagnostic::catch(|| compile_tokens(&tokens, name))
 }
-fn compile_inner(source: &str, name: &str) -> Result<Program> {
-    let mut lexer = Lexer::with_source(source, name);
-    let tokens = lexer.get_tokens();
+
+/// Resolve source dependencies at compile time, then produce self-contained bytecode.
+pub fn compile_file(path: &Path) -> Result<Program> {
+    let files = modules::load(path)?;
+    let entry = files.last().ok_or("missing entry file")?;
+    let mut imports = Vec::new();
+    let mut bodies = Vec::new();
+    for file in &files {
+        let tokens = file.tokens()?;
+        for import in tokens[..file.body_start].chunks_exact(3) {
+            if matches!(import[1].code, T::ID(_)) {
+                imports.extend_from_slice(import);
+            }
+        }
+        let mut body: Vec<_> = tokens.into_iter().skip(file.body_start).collect();
+        // Only top-level parsers may cross a file boundary. Incomplete syntax
+        // cannot consume the next file's declarations.
+        body.last_mut().unwrap().code = T::MODULE_END;
+        bodies.extend(body);
+    }
+    imports.extend(bodies);
+    imports.push(Token {
+        code: T::END,
+        source: &entry.name,
+        line: entry.text.lines().count().max(1),
+        pos: 1,
+    });
+    crate::diagnostic::catch(|| compile_tokens(&imports, &entry.name))
+}
+
+fn compile_tokens(tokens: &[Token<'_>], entry: &str) -> Result<Program> {
     let mut depth = 0usize;
     let mut segment = 0;
     for token in tokens {
+        if token.code == T::MODULE_END {
+            depth = 0;
+            segment = 0;
+            continue;
+        }
         segment += 1;
         match token.code {
             T::LACC | T::LPAR | T::LBRACKET => {
@@ -795,6 +841,11 @@ fn compile_inner(source: &str, name: &str) -> Result<Program> {
     }
     let mut functions = Vec::new();
     while parser.current() != T::END {
+        if parser.eat(T::MODULE_END) {
+            continue;
+        }
+        let origin = parser.tokens[parser.pos].clone();
+        let location = origin.location();
         let ty = parser.ty()?;
         if let Ty::Struct(name) = &ty {
             if parser.eat(T::LACC) {
@@ -813,6 +864,9 @@ fn compile_inner(source: &str, name: &str) -> Result<Program> {
             }
         }
         let name = parser.name()?;
+        if name == "main" && origin.source != entry {
+            return Err(format!("{location}: only the entry file may define main"));
+        }
         if parser.eat(T::LPAR) {
             let mut params = Vec::new();
             if !parser.eat(T::RPAR) {
@@ -832,8 +886,9 @@ fn compile_inner(source: &str, name: &str) -> Result<Program> {
                     parser.expect(T::COMMA)?;
                 }
             }
-            let body = parser.stmt()?;
+            let body = parser.stmt().map_err(|e| format!("{location}: {e}"))?;
             functions.push(Function {
+                location,
                 name,
                 ret: ty,
                 params,
@@ -898,7 +953,8 @@ fn compile_inner(source: &str, name: &str) -> Result<Program> {
             );
             offset += size as i64;
         }
-        g.stmt(&f.body)?;
+        g.stmt(&f.body)
+            .map_err(|e| format!("{}: {e}", f.location))?;
         if f.ret == Ty::Void {
             g.pair(O::Ret, g.args_size as i64, 0);
         } else {
@@ -1119,8 +1175,80 @@ mod tests {
             assert!(error.contains("lib/broken.atomc"), "{error}");
             assert!(error.contains("Line: 1"), "{error}");
         }
-        let mut lexer = Lexer::with_source("int x;", "lib/values.atomc");
+        let mut lexer = crate::lexer::Lexer::with_source("int x;", "lib/values.atomc");
         assert_eq!(lexer.get_tokens()[0].location(), "lib/values.atomc:1:1");
+    }
+
+    #[test]
+    fn custom_imports_share_structs_globals_functions_and_builtins() {
+        let project = crate::test_support::Project::new();
+        project.write("lib/geometry.atomc", "import math;struct Circle{double radius;};int count;double area(struct Circle c){count=count+1;return 3*pow(c.radius,2);}");
+        let entry = project.write("main.atomc", "import io;import \"lib/geometry.atomc\";int main(){struct Circle c;c.radius=2;put_d(area(c));put_i(count);put_d(sqrt(9));return 0;}");
+        let mut vm = compile_file(&entry).unwrap().into_vm("").unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), "12\n1\n3\n");
+        assert_eq!(vm.stack_len(), 0);
+    }
+    #[test]
+    fn custom_import_diamonds_compile_once_and_serialize_deterministically() {
+        let project = crate::test_support::Project::new();
+        project.write("common.atomc", "int twice(int x){return x*2;}");
+        project.write(
+            "lib/a.atomc",
+            "import \"../common.atomc\";int a(){return twice(2);}",
+        );
+        project.write(
+            "b.atomc",
+            "import \"common.atomc\";int b(){return twice(3);}",
+        );
+        let entry = project.write("main.atomc", "import io;import \"lib/a.atomc\";import \"b.atomc\";import \"./common.atomc\";int main(){put_i(a()+b());return 0;}");
+        let bytes = crate::bytecode::encode(&compile_file(&entry).unwrap()).unwrap();
+        assert_eq!(
+            bytes,
+            crate::bytecode::encode(&compile_file(&entry).unwrap()).unwrap()
+        );
+        let mut vm = crate::bytecode::decode(&bytes)
+            .unwrap()
+            .into_vm("")
+            .unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), "10\n");
+    }
+    #[test]
+    fn module_boundaries_duplicates_and_entry_ownership_are_enforced() {
+        let project = crate::test_support::Project::new();
+        let entry = project.write("main.atomc", "import \"lib.atomc\";int main(){return 0;}");
+        for (library, expected) in [
+            ("int main(){return 0;}", "only the entry file"),
+            ("int x", "end of source module"),
+            ("struct Broken{", "end of source module"),
+            ("int f(){return 1;", "end of source module"),
+            ("int f(){return missing;}", "undefined symbol: missing"),
+        ] {
+            project.write("lib.atomc", library);
+            let error = compile_file(&entry).err().unwrap();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("lib.atomc"), "{error}");
+        }
+        project.write("lib.atomc", "int main(){return 0;}");
+        project.write("main.atomc", "import \"lib.atomc\";");
+        assert!(compile_file(&entry)
+            .err()
+            .unwrap()
+            .contains("only the entry file"));
+        project.write("lib.atomc", "int x;");
+        project.write(
+            "main.atomc",
+            "import \"lib.atomc\";int x;int main(){return 0;}",
+        );
+        assert!(compile_file(&entry)
+            .err()
+            .unwrap()
+            .contains("symbol redefinition: x"));
+        assert!(compile("import \"lib.atomc\";int main(){return 0;}")
+            .err()
+            .unwrap()
+            .contains("file compilation entry point"));
     }
 
     #[test]

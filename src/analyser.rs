@@ -94,6 +94,7 @@ enum ErrorKind {
 
 pub struct Analyser<'a> {
     tokens: &'a [Token<'a>],
+    entry_source: &'a str,
     pos: usize,
     statement_depth: usize,
     libraries: Vec<Library>,
@@ -114,6 +115,7 @@ impl<'a> Analyser<'a> {
     pub fn new(tokens: &'a [Token<'a>]) -> Self {
         Self {
             tokens,
+            entry_source: tokens.last().map(|t|t.source).unwrap_or("<source>"),
             pos: 0,
             statement_depth: 0,
             libraries: vec![Library::Core],
@@ -400,6 +402,7 @@ impl<'a> Analyser<'a> {
             TokenCode::GREATER => ">".to_string(),
             TokenCode::GREATEREQ => ">=".to_string(),
 
+            TokenCode::MODULE_END => "end of source module".to_string(),
             TokenCode::END => "end of file".to_string(),
         }
     }
@@ -695,6 +698,7 @@ impl<'a> Analyser<'a> {
 
     pub fn unit(&mut self) -> bool {
         loop {
+            if self.consume(|code| matches!(code, TokenCode::MODULE_END)) { continue; }
             let start_pos = self.pos;
 
             if self.struct_def() {
@@ -975,6 +979,10 @@ impl<'a> Analyser<'a> {
 
             self.pos = start_pos;
             return false;
+        }
+
+        if name == "main" && self.tokens[name_pos].source != self.entry_source {
+            self.domain_error_at(name_pos, "only the entry file may define main".into());
         }
 
         if self.find_symbol_in_current_scope(name).is_some() {

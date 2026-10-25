@@ -47,6 +47,7 @@ pub enum TokenCode<'a> {
     GREATER,
     GREATEREQ,
 
+    MODULE_END,
     END,
 }
 

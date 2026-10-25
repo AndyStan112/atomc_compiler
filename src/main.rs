@@ -12,6 +12,8 @@ mod diagnostic;
 mod layout;
 mod lexer;
 mod modules;
+#[cfg(test)]
+mod test_support;
 mod vm;
 
 const USAGE: &str = "Usage: AtomC [SOURCE]\n       AtomC --compile SOURCE OUTPUT.atbc\n       AtomC --run-bytecode PROGRAM.atbc\nGuest I/O uses stdin/stdout. Default source: data/main.atomc";
