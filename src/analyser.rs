@@ -1243,9 +1243,7 @@ impl<'a> Analyser<'a> {
     }
 
     pub fn expr_assign(&mut self) -> bool {
-        let start_pos = self.pos;
-
-        if self.expr_unary() {
+        if self.expr_or() {
             let dst = self.last_retval.clone().unwrap();
             let assign_pos = self.pos;
 
@@ -1274,18 +1272,16 @@ impl<'a> Analyser<'a> {
 
                 self.cast(&dst.typ, &src.typ, assign_pos);
 
-                let mut rv = src;
+                let mut rv = dst;
                 rv.is_lval = false;
                 rv.is_ct_val = true;
                 self.last_retval = Some(rv);
 
                 return true;
             }
+            return true;
         }
-
-        self.pos = start_pos;
-
-        self.expr_or()
+        false
     }
 
     pub fn expr_or(&mut self) -> bool {

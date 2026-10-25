@@ -6,6 +6,7 @@ mod lexer;
 mod analyser;
 mod vm;
 mod layout;
+mod compiler;
 
 fn main() {
     let filename = env::args()
