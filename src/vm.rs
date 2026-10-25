@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Instant;
 
@@ -9,7 +10,7 @@ pub const GLOBAL_SIZE: usize = 32 * 1024;
 pub const INT_SIZE: usize = size_of::<i32>();
 pub const DOUBLE_SIZE: usize = size_of::<f64>();
 pub const CHAR_SIZE: usize = size_of::<u8>();
-pub const ADDR_SIZE: usize = size_of::<usize>();
+pub const ADDR_SIZE: usize = 8;
 
 pub type Address = usize;
 pub type InstrId = usize;
@@ -46,6 +47,12 @@ impl ExtFunc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
+    GlobalRef,
+    LocalRef,
+    ArgRef,
+    Index,
+    Field,
+    ReadOnlyRef,
     AddC,
     AddD,
     AddI,
@@ -318,6 +325,8 @@ impl Instructions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VmError {
+    Bounds,
+    ResourceLimit,
     DivisionByZero,
     GlobalOverflow,
     InvalidAddress(Address),
@@ -333,6 +342,8 @@ pub enum VmError {
 impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Bounds => write!(f, "guest object bounds violation"),
+            Self::ResourceLimit => write!(f, "guest resource limit exceeded"),
             Self::DivisionByZero => write!(f, "division by zero"),
             Self::GlobalOverflow => write!(f, "insufficient globals space"),
             Self::InvalidAddress(address) => write!(f, "invalid memory address: {address}"),
@@ -353,7 +364,28 @@ impl fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
+#[derive(Clone, Copy)]
+struct Reference {
+    address: usize,
+    size: usize,
+    writable: bool,
+    frame: Option<usize>,
+}
+struct Frame {
+    fp: usize,
+    end: usize,
+    caller_floor: usize,
+    return_ip: usize,
+    old_fp: Option<usize>,
+}
 pub struct Vm {
+    pub checked: bool,
+    pub fuel: usize,
+    refs: HashMap<usize, Reference>,
+    next_ref: usize,
+    frames: Vec<Frame>,
+    calls: Vec<(usize, usize)>,
+    operand_floor: usize,
     pub instructions: Instructions,
     memory: Vec<u8>,
     n_globals: usize,
@@ -375,6 +407,13 @@ impl Default for Vm {
 impl Vm {
     pub fn new() -> Self {
         Self {
+            checked: false,
+            fuel: 1_000_000,
+            refs: HashMap::new(),
+            next_ref: 1,
+            frames: Vec::new(),
+            calls: Vec::new(),
+            operand_floor: GLOBAL_SIZE,
             instructions: Instructions::new(),
             memory: vec![0; GLOBAL_SIZE + STACK_SIZE],
             n_globals: 0,
@@ -412,7 +451,7 @@ impl Vm {
     }
 
     pub fn alloc_global(&mut self, size: usize) -> Result<Address, VmError> {
-        if self.n_globals + size > GLOBAL_SIZE {
+        if size > GLOBAL_SIZE - self.n_globals {
             return Err(VmError::GlobalOverflow);
         }
 
@@ -455,30 +494,30 @@ impl Vm {
     }
 
     pub fn push_i(&mut self, value: i32) -> Result<(), VmError> {
-        self.push_bytes(&value.to_ne_bytes())
+        self.push_bytes(&value.to_le_bytes())
     }
 
     pub fn pop_i(&mut self) -> Result<i32, VmError> {
         let bytes: [u8; INT_SIZE] = self.pop_bytes(INT_SIZE)?.try_into().unwrap();
-        Ok(i32::from_ne_bytes(bytes))
+        Ok(i32::from_le_bytes(bytes))
     }
 
     pub fn push_d(&mut self, value: f64) -> Result<(), VmError> {
-        self.push_bytes(&value.to_ne_bytes())
+        self.push_bytes(&value.to_le_bytes())
     }
 
     pub fn pop_d(&mut self) -> Result<f64, VmError> {
         let bytes: [u8; DOUBLE_SIZE] = self.pop_bytes(DOUBLE_SIZE)?.try_into().unwrap();
-        Ok(f64::from_ne_bytes(bytes))
+        Ok(f64::from_le_bytes(bytes))
     }
 
     pub fn push_a(&mut self, value: Address) -> Result<(), VmError> {
-        self.push_bytes(&value.to_ne_bytes())
+        self.push_bytes(&(value as u64).to_le_bytes())
     }
 
     pub fn pop_a(&mut self) -> Result<Address, VmError> {
         let bytes: [u8; ADDR_SIZE] = self.pop_bytes(ADDR_SIZE)?.try_into().unwrap();
-        Ok(usize::from_ne_bytes(bytes))
+        usize::try_from(u64::from_le_bytes(bytes)).map_err(|_| VmError::Bounds)
     }
 
     pub fn run(&mut self) -> Result<(), VmError> {
@@ -490,9 +529,19 @@ impl Vm {
         self.sp = GLOBAL_SIZE;
         self.fp = None;
         self.started_at = Instant::now();
+        self.refs.clear();
+        self.next_ref = 1;
+        self.frames.clear();
+        self.calls.clear();
+        self.operand_floor = GLOBAL_SIZE;
+        let mut fuel = self.fuel;
         let mut ip = Some(start);
 
         while let Some(id) = ip {
+            if fuel == 0 || self.output.len() > 1024 * 1024 {
+                return Err(VmError::ResourceLimit);
+            }
+            fuel -= 1;
             let instr = self
                 .instructions
                 .get(id)
@@ -508,8 +557,82 @@ impl Vm {
                 );
             }
 
+            if self.checked
+                && matches!(
+                    instr.opcode,
+                    Opcode::PushCtA | Opcode::PushFpAddr | Opcode::Offset
+                )
+            {
+                return Err(VmError::InvalidArgument(
+                    "bounded guest reference instruction",
+                ));
+            }
             let next = instr.next;
             ip = match instr.opcode {
+                Opcode::GlobalRef | Opcode::ReadOnlyRef => {
+                    let address = self.arg_size(instr.args[0])?;
+                    let size = self.arg_size(instr.args[1])?;
+                    if address.checked_add(size).is_none_or(|e| e > self.n_globals) {
+                        return Err(VmError::Bounds);
+                    }
+                    let handle = self.reference(Reference {
+                        address,
+                        size,
+                        writable: instr.opcode == Opcode::GlobalRef,
+                        frame: None,
+                    })?;
+                    self.push_a(handle)?;
+                    next
+                }
+                Opcode::LocalRef | Opcode::ArgRef => {
+                    let offset = instr.args[0].int()?;
+                    let size = self.arg_size(instr.args[1])?;
+                    let frame = self.frames.last().ok_or(VmError::MissingFramePointer)?;
+                    let address = frame
+                        .fp
+                        .checked_add_signed(isize::try_from(offset).map_err(|_| VmError::Bounds)?)
+                        .ok_or(VmError::Bounds)?;
+                    let end = address.checked_add(size).ok_or(VmError::Bounds)?;
+                    if instr.opcode == Opcode::LocalRef {
+                        if address < frame.fp || end > frame.end {
+                            return Err(VmError::Bounds);
+                        }
+                    } else if address < frame.caller_floor || end > frame.fp - 2 * ADDR_SIZE {
+                        return Err(VmError::Bounds);
+                    }
+                    let handle = self.reference(Reference {
+                        address,
+                        size,
+                        writable: true,
+                        frame: Some(self.frames.len()),
+                    })?;
+                    self.push_a(handle)?;
+                    next
+                }
+                Opcode::Index | Opcode::Field => {
+                    let (offset, size) = if instr.opcode == Opcode::Index {
+                        let stride = self.arg_size(instr.args[0])?;
+                        let index = usize::try_from(self.pop_i()?).map_err(|_| VmError::Bounds)?;
+                        if stride == 0 {
+                            return Err(VmError::Bounds);
+                        }
+                        (index.checked_mul(stride).ok_or(VmError::Bounds)?, stride)
+                    } else {
+                        (self.arg_size(instr.args[0])?, self.arg_size(instr.args[1])?)
+                    };
+                    let handle = self.pop_a()?;
+                    let parent = self.get_reference(handle)?;
+                    if offset.checked_add(size).is_none_or(|e| e > parent.size) {
+                        return Err(VmError::Bounds);
+                    }
+                    let handle = self.reference(Reference {
+                        address: parent.address + offset,
+                        size,
+                        ..parent
+                    })?;
+                    self.push_a(handle)?;
+                    next
+                }
                 Opcode::AddC => {
                     let right = self.pop_c()?;
                     let left = self.pop_c()?;
@@ -554,6 +677,13 @@ impl Vm {
                 }
                 Opcode::Call => {
                     let target = instr.args[0].instr()?;
+                    if self.checked {
+                        if self.calls.len() >= 256 {
+                            return Err(VmError::ResourceLimit);
+                        }
+                        self.calls
+                            .push((next.ok_or(VmError::MissingInstruction)?, self.sp));
+                    }
                     self.push_a(next.ok_or(VmError::MissingInstruction)?)?;
                     Some(target)
                 }
@@ -625,6 +755,25 @@ impl Vm {
                     self.push_a(self.fp.unwrap_or(usize::MAX))?;
                     self.fp = Some(self.sp);
                     self.reserve_stack(size)?;
+                    if self.checked {
+                        let (return_ip, call_sp) =
+                            *self.calls.last().ok_or(VmError::MissingFramePointer)?;
+                        let fp = self.fp.unwrap();
+                        if fp != call_sp + 2 * ADDR_SIZE
+                            || self.frames.len() + 1 != self.calls.len()
+                        {
+                            return Err(VmError::Bounds);
+                        }
+                        let old_fp = self.frames.last().map(|f| f.fp);
+                        self.frames.push(Frame {
+                            fp,
+                            end: self.sp,
+                            caller_floor: self.operand_floor,
+                            return_ip,
+                            old_fp,
+                        });
+                        self.operand_floor = self.sp;
+                    }
                     next
                 }
                 Opcode::EqA => {
@@ -742,6 +891,7 @@ impl Vm {
                 Opcode::Load => {
                     let size = self.arg_size(instr.args[0])?;
                     let address = self.pop_a()?;
+                    let address = self.resolve(address, size, false)?;
                     let bytes = self.read_memory(address, size)?.to_vec();
                     self.push_bytes(&bytes)?;
                     next
@@ -887,6 +1037,27 @@ impl Vm {
                 Opcode::Ret => {
                     let args_size = self.arg_size(instr.args[0])?;
                     let return_size = self.arg_size(instr.args[1])?;
+                    if self.checked {
+                        if return_size > self.sp - self.operand_floor {
+                            return Err(VmError::StackUnderflow);
+                        }
+                        let frame = self.frames.pop().ok_or(VmError::MissingFramePointer)?;
+                        let args_end = frame.fp - 2 * ADDR_SIZE;
+                        let base = args_end
+                            .checked_sub(args_size)
+                            .filter(|b| *b >= frame.caller_floor)
+                            .ok_or(VmError::Bounds)?;
+                        let value = self.memory[self.sp - return_size..self.sp].to_vec();
+                        self.refs
+                            .retain(|_, r| r.frame.is_none_or(|depth| depth <= self.frames.len()));
+                        self.sp = base;
+                        self.fp = frame.old_fp;
+                        self.operand_floor = frame.caller_floor;
+                        self.calls.pop();
+                        self.push_bytes(&value)?;
+                        ip = Some(frame.return_ip);
+                        continue;
+                    }
                     let old_sp = self.sp;
                     let fp = self.fp.ok_or(VmError::MissingFramePointer)?;
 
@@ -905,16 +1076,18 @@ impl Vm {
                 }
                 Opcode::Store => {
                     let size = self.arg_size(instr.args[0])?;
-                    if self.stack_len() < ADDR_SIZE + size {
+                    if size > STACK_SIZE || self.sp - self.operand_floor < ADDR_SIZE + size {
                         return Err(VmError::StackUnderflow);
                     }
 
                     let address_pos = self.sp - size - ADDR_SIZE;
-                    let address = usize::from_ne_bytes(
+                    let address = u64::from_le_bytes(
                         self.memory[address_pos..address_pos + ADDR_SIZE]
                             .try_into()
                             .unwrap(),
                     );
+                    let address = usize::try_from(address).map_err(|_| VmError::Bounds)?;
+                    let address = self.resolve(address, size, true)?;
                     let value = self.memory[self.sp - size..self.sp].to_vec();
                     self.write_memory(address, &value)?;
                     self.sp -= ADDR_SIZE + size;
@@ -957,11 +1130,13 @@ impl Vm {
                 let value = self.read_input_line();
                 let mut bytes = value.into_bytes();
                 bytes.push(0);
+                let address = self.resolve(address, bytes.len(), true)?;
                 self.write_memory(address, &bytes)?;
             }
             ExtFunc::PutI => {
                 let value = self.pop_i()?;
-                self.output.push_str(&format!("#{value}\n"));
+                self.output
+                    .push_str(&format!("{}{value}\n", if self.checked { "" } else { "#" }));
             }
             ExtFunc::GetI => {
                 let value = self
@@ -972,7 +1147,8 @@ impl Vm {
             }
             ExtFunc::PutD => {
                 let value = self.pop_d()?;
-                self.output.push_str(&format!("#{value}\n"));
+                self.output
+                    .push_str(&format!("{}{value}\n", if self.checked { "" } else { "#" }));
             }
             ExtFunc::GetD => {
                 let value = self
@@ -983,7 +1159,13 @@ impl Vm {
             }
             ExtFunc::PutC => {
                 let value = self.pop_c()?;
-                self.output.push_str(&format!("#{}\n", value as char));
+                if !self.checked {
+                    self.output.push('#');
+                }
+                self.output.push(value as char);
+                if !self.checked {
+                    self.output.push('\n');
+                }
             }
             ExtFunc::GetC => {
                 let value = self
@@ -1000,8 +1182,40 @@ impl Vm {
         Ok(())
     }
 
+    fn reference(&mut self, r: Reference) -> Result<usize, VmError> {
+        // Deduplicate repeated references in loops while retaining lifetime identity.
+        if let Some((&id, _)) = self.refs.iter().find(|(_, v)| {
+            v.address == r.address
+                && v.size == r.size
+                && v.writable == r.writable
+                && v.frame == r.frame
+        }) {
+            return Ok(id);
+        }
+        if self.refs.len() >= 65536 {
+            return Err(VmError::ResourceLimit);
+        }
+        let id = self.next_ref;
+        self.next_ref = id.checked_add(1).ok_or(VmError::ResourceLimit)?;
+        self.refs.insert(id, r);
+        Ok(id)
+    }
+    fn get_reference(&self, id: usize) -> Result<Reference, VmError> {
+        self.refs.get(&id).copied().ok_or(VmError::Bounds)
+    }
+    fn resolve(&self, address: usize, size: usize, write: bool) -> Result<usize, VmError> {
+        if !self.checked {
+            return Ok(address);
+        }
+        let r = self.get_reference(address)?;
+        if size > r.size || (write && !r.writable) {
+            return Err(VmError::Bounds);
+        }
+        Ok(r.address)
+    }
+
     fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), VmError> {
-        if self.sp + bytes.len() > self.memory.len() {
+        if bytes.len() > self.memory.len() - self.sp {
             return Err(VmError::StackOverflow);
         }
 
@@ -1011,7 +1225,7 @@ impl Vm {
     }
 
     fn pop_bytes(&mut self, size: usize) -> Result<&[u8], VmError> {
-        if self.stack_len() < size {
+        if self.sp - self.operand_floor < size {
             return Err(VmError::StackUnderflow);
         }
 
@@ -1020,7 +1234,7 @@ impl Vm {
     }
 
     fn reserve_stack(&mut self, size: usize) -> Result<(), VmError> {
-        if self.sp + size > self.memory.len() {
+        if size > self.memory.len() - self.sp {
             return Err(VmError::StackOverflow);
         }
 
@@ -1030,7 +1244,7 @@ impl Vm {
     }
 
     fn drop_bytes(&mut self, size: usize) -> Result<(), VmError> {
-        if self.stack_len() < size {
+        if self.sp - self.operand_floor < size {
             return Err(VmError::StackUnderflow);
         }
 
@@ -1039,10 +1253,12 @@ impl Vm {
     }
 
     fn insert(&mut self, destination_size: usize, value_size: usize) -> Result<(), VmError> {
-        if destination_size > self.stack_len() || value_size > self.stack_len() {
+        if destination_size > self.sp - self.operand_floor
+            || value_size > self.sp - self.operand_floor
+        {
             return Err(VmError::StackUnderflow);
         }
-        if self.sp + value_size > self.memory.len() {
+        if value_size > self.memory.len() - self.sp {
             return Err(VmError::StackOverflow);
         }
 
@@ -1076,8 +1292,14 @@ impl Vm {
     }
 
     fn read_c_string(&self, address: Address) -> Result<String, VmError> {
+        let size = if self.checked {
+            self.get_reference(address)?.size
+        } else {
+            self.memory.len().saturating_sub(address)
+        };
+        let address = self.resolve(address, size, false)?;
         self.ensure_address(address, 1)?;
-        let end = self.memory[address..]
+        let end = self.memory[address..address + size]
             .iter()
             .position(|byte| *byte == 0)
             .map(|offset| address + offset)
@@ -1154,6 +1376,47 @@ pub fn mv_test() -> Result<Vm, VmError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_references_reject_neighbor_access_and_literal_writes() {
+        for (index, readonly) in [(2, false), (-1, false), (0, true)] {
+            let mut vm = Vm::new();
+            vm.checked = true;
+            vm.alloc_global(12).unwrap();
+            vm.instructions.add_instr_ii(
+                if readonly {
+                    Opcode::ReadOnlyRef
+                } else {
+                    Opcode::GlobalRef
+                },
+                0,
+                8,
+            );
+            vm.instructions.add_instr_i(Opcode::PushCtI, index);
+            vm.instructions.add_instr_i(Opcode::Index, 4);
+            vm.instructions.add_instr_i(Opcode::PushCtI, 99);
+            vm.instructions.add_instr_i(Opcode::Store, 4);
+            vm.instructions.add_instr(Opcode::Halt);
+            assert_eq!(vm.run(), Err(VmError::Bounds));
+            assert_eq!(vm.read_memory(8, 4).unwrap(), &[0; 4]);
+        }
+    }
+    #[test]
+    fn checked_strings_and_execution_are_bounded() {
+        let mut vm = Vm::with_input("too long");
+        vm.checked = true;
+        vm.alloc_global(4).unwrap();
+        vm.instructions.add_instr_ii(Opcode::GlobalRef, 0, 4);
+        vm.instructions.add_instr_ext(ExtFunc::GetS);
+        vm.instructions.add_instr(Opcode::Halt);
+        assert_eq!(vm.run(), Err(VmError::Bounds));
+        let mut vm = Vm::new();
+        vm.checked = true;
+        vm.fuel = 10;
+        vm.instructions.add_instr_target(Opcode::Jmp, 0);
+        assert_eq!(vm.run(), Err(VmError::ResourceLimit));
+        assert_eq!(vm.alloc_global(usize::MAX), Err(VmError::GlobalOverflow));
+    }
 
     #[test]
     fn stack_uses_each_types_exact_size() {
