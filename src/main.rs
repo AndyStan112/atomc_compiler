@@ -4,6 +4,7 @@ use std::fs;
 
 mod lexer;
 mod analyser;
+mod vm;
 
 fn main() {
     let filename = env::args()
@@ -24,4 +25,17 @@ fn main() {
 
     analyser.parse();
     analyser.print_symbols();
+
+    let mut vm = vm::mv_test().unwrap_or_else(|err| {
+        eprintln!("Could not build VM test: {}", err);
+        std::process::exit(1);
+    });
+
+    vm.trace = true;
+    vm.run().unwrap_or_else(|err| {
+        eprintln!("VM error: {}", err);
+        std::process::exit(1);
+    });
+
+    print!("{}", vm.output());
 }

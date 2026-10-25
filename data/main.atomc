@@ -53,6 +53,10 @@ int sumArray(int values[10], int n) {
 double computeAverage(int values[10], int n) {
     int total;
     double avg;
+    {
+    int avg;
+    avg = 3.4;
+    }
 
     total = sumArray(values, n);
     avg = total / n;
