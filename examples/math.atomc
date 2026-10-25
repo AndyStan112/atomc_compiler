@@ -1,0 +1,13 @@
+import io;
+import math;
+
+int main() {
+    double value;
+    put_s("Enter a nonnegative number:");
+    value = get_d();
+    put_s("Square root:");
+    put_d(sqrt(value));
+    put_s("Square:");
+    put_d(pow(value, 2));
+    return 0;
+}

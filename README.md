@@ -45,6 +45,23 @@ and imports after declarations are errors. Imports select a fixed built-in
 registry; they do not load files, native libraries, or source modules. The runtime
 helper `double seconds()` remains available without an import.
 
+Add `import math;` for `sqrt`, `pow`, `sin`, `cos`, `tan`, `fabs`, `floor`,
+`ceil`, `round`, `exp`, `log`, `log10`, and integer `abs`. For example:
+
+```c
+import io;
+import math;
+
+int main() {
+    put_d(sqrt(9));
+    return 0;
+}
+```
+
+Run `cargo run -- examples/math.atomc` for an interactive example. Invalid math
+domains and non-finite inputs/results produce a VM error. See
+[built-in library signatures and behavior](docs/libraries.md).
+
 Supported features include scalar numeric types and casts, globals and scoped
 locals, fixed arrays, nested structs, functions and recursion, `if`/`else`,
 `while`, `for`, `break`, and short-circuit logic. Definitions precede use. Arrays

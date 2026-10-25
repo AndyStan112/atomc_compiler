@@ -32,7 +32,29 @@ resource limits described in [the guest ABI](guest-abi.md). Invalid stack behavi
 or references fail with a VM error. Bytecode must never select legacy VM mode.
 
 External IDs: 0 `put_s`, 1 `get_s`, 2 `put_i`, 3 `get_i`, 4 `put_d`, 5 `get_d`,
-6 `put_c`, 7 `get_c`, 8 `seconds`. No other external calls exist.
+6 `put_c`, 7 `get_c`, 8 `seconds`. These pre-import IDs are unchanged, so existing
+version 1 files continue to load. The math library appends the following IDs:
+
+| ID | External |
+| --- | --- |
+| 9 | `sqrt` |
+| 10 | `pow` |
+| 11 | `sin` |
+| 12 | `cos` |
+| 13 | `tan` |
+| 14 | `fabs` |
+| 15 | `floor` |
+| 16 | `ceil` |
+| 17 | `round` |
+| 18 | `exp` |
+| 19 | `log` |
+| 20 | `log10` |
+| 21 | `abs` |
+
+No other external calls exist. Older decoders reject the new math IDs as unknown.
+Imports select source-level declarations and add no bytecode records or native
+symbols; both signatures and external IDs come from one built-in registry.
+Math uses the same runtime domain checks after deserialization.
 
 Opcode IDs are explicit and must remain stable within version 1:
 

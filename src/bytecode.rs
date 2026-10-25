@@ -343,6 +343,34 @@ mod tests {
     }
 
     #[test]
+    fn math_externals_round_trip_and_execute() {
+        let p = compile("import io;import math;int main(){put_d(sqrt(get_d()));put_d(pow(2,3));put_i(abs(-7));return 0;}").unwrap();
+        let bytes = encode(&p).unwrap();
+        let p = decode(&bytes).unwrap();
+        assert_eq!(encode(&p).unwrap(), bytes);
+        let mut vm = p.into_vm("9").unwrap();
+        vm.run().unwrap();
+        assert_eq!(vm.output(), "3\n8\n7\n");
+    }
+    #[test]
+    fn pre_import_external_ids_remain_compatible() {
+        use crate::vm::ExtFunc::*;
+        for (id, function) in [PutS, GetS, PutI, GetI, PutD, GetD, PutC, GetC, Seconds]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                builtins::ALL
+                    .iter()
+                    .find(|b| b.function == function)
+                    .unwrap()
+                    .wire_id,
+                id as u64
+            );
+        }
+    }
+
+    #[test]
     fn arbitrary_bytes_never_panic() {
         let mut state = 1u64;
         for len in 0..1024 {

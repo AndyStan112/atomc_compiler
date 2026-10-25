@@ -1032,6 +1032,82 @@ mod tests {
     }
 
     #[test]
+    fn math_is_optional_and_independent_of_io() {
+        assert!(compile("int main(){return sqrt(4);}").is_err());
+        assert!(compile("import io;int main(){return sqrt(4);}").is_err());
+        assert!(compile("import math;int main(){put_d(sqrt(4));return 0;}").is_err());
+        assert!(compile("import math;int main(){return sqrt(4);}").is_ok());
+        assert!(compile("double sqrt(double x){return x;}int main(){return sqrt(4);}").is_ok());
+        assert!(
+            compile("import math;double sqrt(double x){return x;}int main(){return 0;}").is_err()
+        );
+        assert_eq!(run("import math;import io;import math;int main(){int x;x=1;put_d(pow(x=x+1,x=x+1));return 0;}", "").unwrap(), "8\n");
+    }
+    #[test]
+    fn math_functions_execute_with_numeric_conversions() {
+        let src = "import io;import math;int main(){put_d(sqrt(2));put_d(pow(2,3));put_d(sin(0));put_d(cos(0));put_d(tan(0));put_d(fabs(-2.5));put_d(floor(-2.5));put_d(ceil(-2.5));put_d(round(-2.5));put_d(exp(1));put_d(log(1));put_d(log10(100));put_i(abs(-7));put_d(fabs('A'));return 0;}";
+        let output = run(src, "").unwrap();
+        let actual: Vec<f64> = output.lines().map(|s| s.parse().unwrap()).collect();
+        let expected = [
+            std::f64::consts::SQRT_2,
+            8.0,
+            0.0,
+            1.0,
+            0.0,
+            2.5,
+            -3.0,
+            -2.0,
+            -3.0,
+            std::f64::consts::E,
+            0.0,
+            2.0,
+            7.0,
+            65.0,
+        ];
+        assert_eq!(actual.len(), expected.len());
+        for (a, b) in actual.iter().zip(expected) {
+            assert!((a - b).abs() < 1e-12, "{a} != {b}");
+        }
+    }
+    #[test]
+    fn math_rejects_invalid_calls_domains_and_nonfinite_values() {
+        for expression in ["sqrt()", "pow(2)", "sin(1,2)", "sqrt(\"bad\")"] {
+            assert!(
+                compile(&format!("import math;int main(){{{expression};return 0;}}")).is_err(),
+                "{expression}"
+            );
+        }
+        for expression in [
+            "sqrt(-1)",
+            "log(0)",
+            "log(-1)",
+            "log10(0)",
+            "pow(-2,0.5)",
+            "pow(0,-1)",
+            "exp(1000)",
+            "abs(-2147483648)",
+            "sin(1.0/0.0)",
+            "fabs(0.0/0.0)",
+        ] {
+            let source = format!("import math;int main(){{{expression};return 0;}}");
+            assert!(
+                run(&source, "")
+                    .unwrap_err()
+                    .contains("math domain or range error"),
+                "{expression}"
+            );
+        }
+        for input in ["NaN", "inf", "-inf"] {
+            assert!(run(
+                "import io;import math;int main(){sqrt(get_d());return 0;}",
+                input
+            )
+            .unwrap_err()
+            .contains("math domain"));
+        }
+    }
+
+    #[test]
     fn baseline_program_compiles_and_runs() {
         assert_eq!(run(include_str!("../data/main.atomc"), "").unwrap(), "");
     }

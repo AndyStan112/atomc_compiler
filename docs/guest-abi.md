@@ -62,7 +62,10 @@ them. `seconds()` remains a core built-in. Imports occur before all declarations
 are idempotent, and resolve only allowlisted built-in names. Imported functions
 use unqualified names and cannot be redefined. Imports are source-level name
 visibility, not bytecode permissions; loaded bytecode uses the same fixed external
-allowlist. Numeric output ends in newline; `put_s` adds newline;
+allowlist. The optional `math` library adds checked scalar math functions; see
+[the library reference](libraries.md) for signatures, domain rules, and rounding
+behavior. Math calls use the same guest argument/result convention and do not
+receive I/O or other host capabilities. Numeric output ends in newline; `put_s` adds newline;
 `put_c` writes the byte value as a Unicode character encoded in UTF-8. Numeric input consumes a whitespace-delimited
 token. Character input consumes the next UTF-8 character and rejects values above 255. String input reads a line,
 skipping one pending newline, and includes a terminating NUL in the destination.

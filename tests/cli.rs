@@ -159,3 +159,38 @@ fn io_requires_an_explicit_library_import() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("unknown built-in library"));
 }
+
+#[test]
+fn optional_math_library_runs_from_source_and_bytecode() {
+    let temp = Temp::new();
+    let binary = temp.0.join("math.atbc");
+    let out = cli()
+        .args(["--compile", "examples/math.atomc"])
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    for args in [
+        vec!["examples/math.atomc".to_string()],
+        vec!["--run-bytecode".into(), binary.to_str().unwrap().into()],
+    ] {
+        let mut child = cli()
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"9\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{:?}", out);
+        assert_eq!(
+            out.stdout,
+            b"Enter a nonnegative number:\nSquare root:\n3\nSquare:\n81\n"
+        );
+    }
+    let path = temp.source("import math;int main(){sqrt(-1);return 0;}");
+    let out = cli().arg(path).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("math domain or range error"));
+}

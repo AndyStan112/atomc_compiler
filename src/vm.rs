@@ -27,6 +27,19 @@ pub enum ExtFunc {
     PutC,
     GetC,
     Seconds,
+    Sqrt,
+    Pow,
+    Sin,
+    Cos,
+    Tan,
+    Fabs,
+    Floor,
+    Ceil,
+    Round,
+    Exp,
+    Log,
+    Log10,
+    Abs,
 }
 
 impl ExtFunc {
@@ -319,6 +332,7 @@ impl Instructions {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum VmError {
+    MathDomain,
     Bounds,
     ResourceLimit,
     DivisionByZero,
@@ -336,6 +350,7 @@ pub enum VmError {
 impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::MathDomain => write!(f, "math domain or range error"),
             Self::Bounds => write!(f, "guest object bounds violation"),
             Self::ResourceLimit => write!(f, "guest resource limit exceeded"),
             Self::DivisionByZero => write!(f, "division by zero"),
@@ -1253,6 +1268,56 @@ impl Vm {
                 )?;
             }
             ExtFunc::Seconds => self.push_d(self.started_at.elapsed().as_secs_f64())?,
+            ExtFunc::Abs => {
+                let value = self.pop_i()?.checked_abs().ok_or(VmError::MathDomain)?;
+                self.push_i(value)?;
+            }
+            ExtFunc::Pow => {
+                let exponent = self.pop_d()?;
+                let base = self.pop_d()?;
+                if !base.is_finite() || !exponent.is_finite() {
+                    return Err(VmError::MathDomain);
+                }
+                let result = base.powf(exponent);
+                if !result.is_finite() {
+                    return Err(VmError::MathDomain);
+                }
+                self.push_d(result)?;
+            }
+            func @ (ExtFunc::Sqrt
+            | ExtFunc::Sin
+            | ExtFunc::Cos
+            | ExtFunc::Tan
+            | ExtFunc::Fabs
+            | ExtFunc::Floor
+            | ExtFunc::Ceil
+            | ExtFunc::Round
+            | ExtFunc::Exp
+            | ExtFunc::Log
+            | ExtFunc::Log10) => {
+                let value = self.pop_d()?;
+                if !value.is_finite() {
+                    return Err(VmError::MathDomain);
+                }
+                let result = match func {
+                    ExtFunc::Sqrt => value.sqrt(),
+                    ExtFunc::Sin => value.sin(),
+                    ExtFunc::Cos => value.cos(),
+                    ExtFunc::Tan => value.tan(),
+                    ExtFunc::Fabs => value.abs(),
+                    ExtFunc::Floor => value.floor(),
+                    ExtFunc::Ceil => value.ceil(),
+                    ExtFunc::Round => value.round(),
+                    ExtFunc::Exp => value.exp(),
+                    ExtFunc::Log => value.ln(),
+                    ExtFunc::Log10 => value.log10(),
+                    _ => return Err(VmError::InvalidArgument("unary math function")),
+                };
+                if !result.is_finite() {
+                    return Err(VmError::MathDomain);
+                }
+                self.push_d(result)?;
+            }
         }
 
         Ok(())
