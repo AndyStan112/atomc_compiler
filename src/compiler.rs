@@ -901,7 +901,7 @@ fn compile_inner(source: &str) -> Result<Program> {
             g.pair(O::Ret, g.args_size as i64, 0);
         } else {
             // A missing non-void return traps instead of consuming uninitialized stack bytes.
-            g.int(O::Drop, usize::MAX / 2);
+            g.emit(O::Trap);
         }
         g.code.get_mut(target).unwrap().args[0] = InstrArg::Int(g.local_size as i64);
         g.scopes.pop();

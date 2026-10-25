@@ -7,6 +7,7 @@ mod analyser;
 mod vm;
 mod layout;
 mod compiler;
+mod bytecode;
 
 fn main() {
     let filename = env::args()

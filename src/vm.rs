@@ -47,6 +47,7 @@ impl ExtFunc {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opcode {
+    Trap,
     GlobalRef,
     LocalRef,
     ArgRef,
@@ -364,7 +365,7 @@ impl fmt::Display for VmError {
 
 impl std::error::Error for VmError {}
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Reference {
     address: usize,
     size: usize,
@@ -382,6 +383,7 @@ pub struct Vm {
     pub checked: bool,
     pub fuel: usize,
     refs: HashMap<usize, Reference>,
+    ref_ids: HashMap<Reference, usize>,
     next_ref: usize,
     frames: Vec<Frame>,
     calls: Vec<(usize, usize)>,
@@ -410,6 +412,7 @@ impl Vm {
             checked: false,
             fuel: 1_000_000,
             refs: HashMap::new(),
+            ref_ids: HashMap::new(),
             next_ref: 1,
             frames: Vec::new(),
             calls: Vec::new(),
@@ -530,6 +533,7 @@ impl Vm {
         self.fp = None;
         self.started_at = Instant::now();
         self.refs.clear();
+        self.ref_ids.clear();
         self.next_ref = 1;
         self.frames.clear();
         self.calls.clear();
@@ -569,6 +573,11 @@ impl Vm {
             }
             let next = instr.next;
             ip = match instr.opcode {
+                Opcode::Trap => {
+                    return Err(VmError::InvalidArgument(
+                        "function ended without a return value",
+                    ))
+                }
                 Opcode::GlobalRef | Opcode::ReadOnlyRef => {
                     let address = self.arg_size(instr.args[0])?;
                     let size = self.arg_size(instr.args[1])?;
@@ -1050,6 +1059,7 @@ impl Vm {
                         let value = self.memory[self.sp - return_size..self.sp].to_vec();
                         self.refs
                             .retain(|_, r| r.frame.is_none_or(|depth| depth <= self.frames.len()));
+                        self.ref_ids.retain(|_, id| self.refs.contains_key(id));
                         self.sp = base;
                         self.fp = frame.old_fp;
                         self.operand_floor = frame.caller_floor;
@@ -1184,12 +1194,7 @@ impl Vm {
 
     fn reference(&mut self, r: Reference) -> Result<usize, VmError> {
         // Deduplicate repeated references in loops while retaining lifetime identity.
-        if let Some((&id, _)) = self.refs.iter().find(|(_, v)| {
-            v.address == r.address
-                && v.size == r.size
-                && v.writable == r.writable
-                && v.frame == r.frame
-        }) {
+        if let Some(&id) = self.ref_ids.get(&r) {
             return Ok(id);
         }
         if self.refs.len() >= 65536 {
@@ -1198,6 +1203,7 @@ impl Vm {
         let id = self.next_ref;
         self.next_ref = id.checked_add(1).ok_or(VmError::ResourceLimit)?;
         self.refs.insert(id, r);
+        self.ref_ids.insert(r, id);
         Ok(id)
     }
     fn get_reference(&self, id: usize) -> Result<Reference, VmError> {
