@@ -342,10 +342,11 @@ impl<'a> Analyser<'a> {
         };
 
         panic!(
-            "\n{}: {}\nScope: {}\nLine: {}, position: {}\nNearby: ... {} ...\n",
+            "\n{}: {}\nScope: {}\nFile: {}\nLine: {}, position: {}\nNearby: ... {} ...\n",
             kind_text,
             message,
             self.current_scope_text(),
+            token.source,
             token.line,
             token.pos,
             self.nearby_tokens_at(token_pos, 3, 3)
@@ -1725,7 +1726,7 @@ mod type_analysis_tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn tk(code: TokenCode<'static>) -> Token<'static> {
-        Token { code, line: 1, pos: 1 }
+        Token { code, source: "<test>", line: 1, pos: 1 }
     }
 
     fn id(name: &'static str) -> Token<'static> {

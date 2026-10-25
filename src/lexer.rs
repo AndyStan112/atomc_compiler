@@ -50,9 +50,10 @@ pub enum TokenCode<'a> {
     END,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token<'a> {
     pub code: TokenCode<'a>,
+    pub source: &'a str,
     pub line: usize,
     pub pos: usize,
 }
@@ -93,7 +94,12 @@ enum State {
     END,
 }
 
+impl Token<'_> {
+    pub fn location(&self) -> String { format!("{}:{}:{}", self.source, self.line, self.pos) }
+}
+
 pub struct Lexer<'a> {
+    source: &'a str,
     src: &'a [u8],
     pos: usize,
     line: usize,
@@ -106,8 +112,11 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub fn new(src: &'a str) -> Self {
+    pub fn new(src: &'a str) -> Self { Self::with_source(src, "<source>") }
+
+    pub fn with_source(src: &'a str, source: &'a str) -> Self {
         Self {
+            source,
             src: src.as_bytes(),
             line: 1,
             line_start: 0,
@@ -157,8 +166,8 @@ impl<'a> Lexer<'a> {
     fn panic(&self, msg: &str) -> ! {
         let col = self.pos - self.line_start + 1;
         panic!(
-            "\nLexical error: {}\nLine: {}, position: {}\n",
-            msg, self.line, col
+            "\nLexical error: {}\nFile: {}\nLine: {}, position: {}\n",
+            msg, self.source, self.line, col
         )
     }
 
@@ -198,6 +207,7 @@ impl<'a> Lexer<'a> {
                             self.state = State::END;
                             return Token {
                                 code: TokenCode::END,
+                                source: self.source,
                                 line: self.line,
                                 pos: self.pos - self.line_start + 1,
                             };
@@ -364,7 +374,7 @@ impl<'a> Lexer<'a> {
                     _ => {
                         let text = self.slice(start, self.pos);
                         self.state = State::START;
-                        return self.tk(TokenCode::CT_INT(text.parse().unwrap()));
+                        return self.tk(TokenCode::CT_INT(text.parse().unwrap_or_else(|_| self.panic("numeric literal out of range"))));
                     }
                 },
 
@@ -395,7 +405,7 @@ impl<'a> Lexer<'a> {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
                             return self.tk(TokenCode::CT_INT(
-                                i64::from_str_radix(text.strip_prefix("0").unwrap(), 8).unwrap(),
+                                i64::from_str_radix(text.strip_prefix("0").unwrap(), 8).unwrap_or_else(|_| self.panic("integer literal out of range")),
                             ));
                         }
                     };
@@ -416,7 +426,7 @@ impl<'a> Lexer<'a> {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
                             return self.tk(TokenCode::CT_INT(
-                                i64::from_str_radix(text.strip_prefix("0x").unwrap(), 16).unwrap(),
+                                i64::from_str_radix(text.strip_prefix("0x").unwrap(), 16).unwrap_or_else(|_| self.panic("integer literal out of range")),
                             ));
                         }
                     };
@@ -440,7 +450,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap()));
+                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap_or_else(|_| self.panic("numeric literal out of range"))));
                         }
                     };
                 }
@@ -471,7 +481,7 @@ impl<'a> Lexer<'a> {
                         _ => {
                             let text = self.slice(start, self.pos);
                             self.state = State::START;
-                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap()));
+                            return self.tk(TokenCode::CT_REAL(text.parse().unwrap_or_else(|_| self.panic("numeric literal out of range"))));
                         }
                     };
                 }
@@ -616,6 +626,7 @@ impl<'a> Lexer<'a> {
     fn tk(&self, code: TokenCode<'a>) -> Token<'a> {
         Token {
             code,
+            source: self.source,
             line: self.token_line,
             pos: self.token_start - self.token_line_start + 1,
         }

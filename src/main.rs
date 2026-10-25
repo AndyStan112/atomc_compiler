@@ -8,6 +8,7 @@ mod analyser;
 mod builtins;
 mod bytecode;
 mod compiler;
+mod diagnostic;
 mod layout;
 mod lexer;
 mod vm;

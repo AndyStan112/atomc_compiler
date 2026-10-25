@@ -60,8 +60,8 @@ impl<'a> Syntax<'a> {
             Ok(())
         } else {
             Err(format!(
-                "lowering: unexpected token at line {}",
-                self.tokens[self.pos].line
+                "{}: lowering: unexpected token",
+                self.tokens[self.pos].location()
             ))
         }
     }
@@ -723,19 +723,17 @@ fn arithmetic(a: &Ty, b: &Ty) -> Result<Ty> {
 }
 
 pub fn compile(source: &str) -> Result<Program> {
-    if source.len() > 1024 * 1024 {
-        return Err("source exceeds 1 MiB".into());
-    }
-    // The legacy front end reports diagnostics by unwinding. Bound recursion before entering it.
-    std::panic::catch_unwind(|| compile_inner(source)).map_err(|p| {
-        p.downcast_ref::<String>()
-            .cloned()
-            .or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string()))
-            .unwrap_or("front end rejected input".into())
-    })?
+    compile_named(source, "<source>")
 }
-fn compile_inner(source: &str) -> Result<Program> {
-    let mut lexer = Lexer::new(source);
+
+fn compile_named(source: &str, name: &str) -> Result<Program> {
+    if source.len() > 1024 * 1024 {
+        return Err(format!("{name}: source exceeds 1 MiB"));
+    }
+    crate::diagnostic::catch(|| compile_inner(source, name))
+}
+fn compile_inner(source: &str, name: &str) -> Result<Program> {
+    let mut lexer = Lexer::with_source(source, name);
     let tokens = lexer.get_tokens();
     let mut depth = 0usize;
     let mut segment = 0;
@@ -745,7 +743,7 @@ fn compile_inner(source: &str) -> Result<Program> {
             T::LACC | T::LPAR | T::LBRACKET => {
                 depth += 1;
                 if depth > 64 {
-                    return Err("source nesting exceeds 64".into());
+                    return Err(format!("{}: source nesting exceeds 64", token.location()));
                 }
             }
             T::RACC | T::RPAR | T::RBRACKET => {
@@ -757,7 +755,10 @@ fn compile_inner(source: &str) -> Result<Program> {
             segment = 0;
         }
         if segment > 256 {
-            return Err("expression exceeds 256 tokens".into());
+            return Err(format!(
+                "{}: expression exceeds 256 tokens",
+                token.location()
+            ));
         }
     }
     let mut analyser = Analyser::new(tokens);
@@ -1105,6 +1106,21 @@ mod tests {
             .unwrap_err()
             .contains("math domain"));
         }
+    }
+
+    #[test]
+    fn diagnostics_identify_the_source_file() {
+        for source in [
+            "int main(){missing();return 0;}",
+            "int main(){return @;}",
+            "int main(){return 999999999999999999999999999;}",
+        ] {
+            let error = compile_named(source, "lib/broken.atomc").err().unwrap();
+            assert!(error.contains("lib/broken.atomc"), "{error}");
+            assert!(error.contains("Line: 1"), "{error}");
+        }
+        let mut lexer = Lexer::with_source("int x;", "lib/values.atomc");
+        assert_eq!(lexer.get_tokens()[0].location(), "lib/values.atomc:1:1");
     }
 
     #[test]
