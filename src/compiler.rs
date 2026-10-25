@@ -226,6 +226,10 @@ impl<'a> Syntax<'a> {
                     Expr::Var(n.into())
                 }
             }
+            T::SUB if self.current() == T::CT_INT(2147483648) => {
+                self.pos += 1;
+                Expr::Int(i32::MIN)
+            }
             T::SUB | T::NOT => Expr::Unary(token == T::NOT, Box::new(self.primary()?)),
             T::LPAR => {
                 if self.is_type() {
@@ -873,13 +877,12 @@ fn compile_inner(source: &str) -> Result<Program> {
         );
         g.ret = f.ret.clone();
         g.local_size = 0;
-        g.args_size = f
-            .params
-            .iter()
-            .map(|(_, t)| g.size(t))
-            .collect::<Result<Vec<_>>>()?
-            .iter()
-            .sum();
+        g.args_size = f.params.iter().try_fold(0usize, |total, (_, t)| {
+            total
+                .checked_add(g.size(t)?)
+                .filter(|n| *n <= layout::MAX_OBJECT - 16)
+                .ok_or("function arguments exceed guest stack limit".to_string())
+        })?;
         g.scopes.push(BTreeMap::new());
         let mut offset = -(16 + g.args_size as i64);
         for (n, t) in f.params {
@@ -966,6 +969,42 @@ mod tests {
             assert!(compile(s).is_err());
         }
     }
+    #[test]
+    fn numeric_edges_and_escaped_literals() {
+        let src = r#"int main(){char c;c=300;put_i(c);put_i(-2147483648/-1);put_c('\n');put_s("quoted: \"ok\"");return 0;}"#;
+        assert_eq!(run(src, "").unwrap(), "44\n-2147483648\n\nquoted: \"ok\"\n");
+    }
+    #[test]
+    fn struct_parameters_are_copied_and_inner_arrays_are_bounded() {
+        let src = "struct S{int x[2];int y;};void f(struct S s){s.x[0]=99;}int main(){struct S s;s.x[0]=4;f(s);put_i(s.x[0]);return 0;}";
+        assert_eq!(run(src, "").unwrap(), "4\n");
+        assert!(run(
+            "struct S{int x[2];int y;};int main(){struct S s;s.x[2]=5;return 0;}",
+            ""
+        )
+        .unwrap_err()
+        .contains("bounds"));
+    }
+    #[test]
+    fn source_depth_and_size_limits_are_errors() {
+        let src = format!(
+            "int main(){{return {}1{};}}",
+            "(".repeat(60),
+            ")".repeat(60)
+        );
+        run(&src, "").unwrap();
+        let src = format!(
+            "int main(){{return {}1{};}}",
+            "(".repeat(1000),
+            ")".repeat(1000)
+        );
+        assert!(compile(&src).is_err());
+        assert!(compile(&" ".repeat(1024 * 1024 + 1)).is_err());
+        let chain = format!("int main(){{{}return 0;}}", "if(1);else ".repeat(1000));
+        assert!(compile(&chain).is_err());
+        assert!(compile("struct Big{char data[20000];};void f(struct Big a,struct Big b){}int main(){return 0;}").is_err());
+    }
+
     #[test]
     fn baseline_program_compiles_and_runs() {
         assert_eq!(run(include_str!("../data/main.atomc"), "").unwrap(), "");

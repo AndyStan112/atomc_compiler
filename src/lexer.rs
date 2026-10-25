@@ -475,6 +475,12 @@ impl<'a> Lexer<'a> {
                 }
 
                 State::STRING => match self.advance() {
+                    Some(b'\\') => {
+                        match self.advance() {
+                            Some(b'n' | b'r' | b't' | b'0' | b'a' | b'b' | b'f' | b'v' | b'\\' | b'\'' | b'"') => (),
+                            _ => self.panic("invalid string escape"),
+                        }
+                    }
                     Some(b'"') => {
                         let text = self.slice(start + 1, self.pos - 1);
                         self.state = State::START;
@@ -487,6 +493,17 @@ impl<'a> Lexer<'a> {
                 },
 
                 State::CHAR => match self.advance() {
+                    Some(b'\\') => {
+                        let value = match self.advance() {
+                            Some(b'n') => '\n', Some(b'r') => '\r', Some(b't') => '\t',
+                            Some(b'0') => '\0', Some(b'a') => '\x07', Some(b'b') => '\x08',
+                            Some(b'f') => '\x0c', Some(b'v') => '\x0b', Some(b'\\') => '\\',
+                            Some(b'\'') => '\'', Some(b'"') => '"', _ => self.panic("invalid character escape"),
+                        };
+                        if self.advance() != Some(b'\'') { self.panic("expected closing quote for char"); }
+                        self.state = State::START;
+                        return self.tk(TokenCode::CT_CHAR(value));
+                    }
                     Some(b'\'') | Some(b'\n') | None => self.panic("invalid char literal"),
                     _ => self.state = State::CHAR_END,
                 },

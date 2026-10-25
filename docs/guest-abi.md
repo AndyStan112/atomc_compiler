@@ -54,12 +54,12 @@ requires the entire element to fit in the parent reference. `Field(offset, size)
 narrows the parent reference to the field. `Load`/`Store` check the resulting
 reference extent; stores also require write permission. String operations remain
 within that extent. `get_s` rejects oversized input before modifying memory;
-`put_s` requires a NUL terminator inside the object. String literals include NUL.
+`put_s` requires a NUL terminator inside the object. String literals include NUL. String and character literals support the standard single-character escapes (`\n`, `\t`, `\0`, escaped quotes and backslashes, etc.).
 
 Only `put_s`, `get_s`, `put_i`, `get_i`, `put_d`, `get_d`, `put_c`, `get_c`, and
 `seconds` are exposed. Numeric output ends in newline; `put_s` adds newline;
-`put_c` writes one byte character. Numeric input consumes a whitespace-delimited
-token. Character input consumes the next character. String input reads a line,
+`put_c` writes the byte value as a Unicode character encoded in UTF-8. Numeric input consumes a whitespace-delimited
+token. Character input consumes the next UTF-8 character and rejects values above 255. String input reads a line,
 skipping one pending newline, and includes a terminating NUL in the destination.
 `seconds` returns elapsed VM runtime. The VM accepts supplied input and buffers
 output; it does not access files, environment variables, shell commands, or process
@@ -68,7 +68,7 @@ writes explicitly named bytecode output files, and prints guest output.
 
 Limits: 32 KiB globals, 32 KiB stack, 256 calls, 65,536 live references, one million
 instructions per run, and approximately 1 MiB buffered output (checked each
-instruction). Compiler input is limited to 1 MiB, nesting to 64 delimiters, and
+instruction). Compiler input is limited to 1 MiB, delimiter nesting to 64, statement nesting to 128, and
 individual source segments between braces/semicolons to 256 tokens. These are
 resource bounds, not a claim of a formally verified sandbox. Bytecode is untrusted
 and must use the checked execution path.

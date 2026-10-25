@@ -94,6 +94,7 @@ enum ErrorKind {
 pub struct Analyser<'a> {
     tokens: &'a [Token<'a>],
     pos: usize,
+    statement_depth: usize,
     scopes: Vec<Scope<'a>>,
     scope_stack: Vec<usize>,
     owner: Option<Owner<'a>>,
@@ -112,6 +113,7 @@ impl<'a> Analyser<'a> {
         Self {
             tokens,
             pos: 0,
+            statement_depth: 0,
             scopes: vec![Scope {
                 name: "global".to_string(),
                 kind: ScopeKind::Global,
@@ -1040,6 +1042,16 @@ impl<'a> Analyser<'a> {
     }
 
     pub fn stm(&mut self) -> bool {
+        self.statement_depth += 1;
+        if self.statement_depth > 128 {
+            self.domain_error_at(self.pos, "statement nesting exceeds 128".into());
+        }
+        let result = self.stm_inner();
+        self.statement_depth -= 1;
+        result
+    }
+
+    fn stm_inner(&mut self) -> bool {
         if self.stm_compound() {
             return true;
         }
