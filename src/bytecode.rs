@@ -324,6 +324,28 @@ mod tests {
         assert!(decode(&bad).is_err());
     }
     #[test]
+    fn mutated_structurally_valid_bytecode_cannot_panic_the_vm() {
+        let source =
+            "int f(int a[]){return a[0];}int main(){int a[2];a[0]=3;put_i(f(a));return 0;}";
+        let bytes = encode(&compile(source).unwrap()).unwrap();
+        let mut seed = 0x12345678u64;
+        for _ in 0..4000 {
+            let mut changed = bytes.clone();
+            for _ in 0..3 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let at = 20 + (seed as usize % (changed.len() - 20));
+                changed[at] = (seed >> 32) as u8;
+            }
+            if let Ok(program) = decode(&changed) {
+                let mut vm = program.into_vm("").unwrap();
+                vm.fuel = 200;
+                // Any success or VM error is acceptable; a Rust panic fails this test.
+                let _ = vm.run();
+            }
+        }
+    }
+
+    #[test]
     fn arbitrary_bytes_never_panic() {
         let mut state = 1u64;
         for len in 0..1024 {
