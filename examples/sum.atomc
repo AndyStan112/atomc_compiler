@@ -1,0 +1,19 @@
+struct Result {
+    int values[2];
+    int total;
+};
+
+int add(int values[]) {
+    return values[0] + values[1];
+}
+
+int main() {
+    struct Result result;
+    put_s("Enter two integers:");
+    result.values[0] = get_i();
+    result.values[1] = get_i();
+    result.total = add(result.values);
+    put_s("Sum:");
+    put_i(result.total);
+    return 0;
+}

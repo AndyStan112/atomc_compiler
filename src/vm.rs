@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::io::{BufRead, Write};
 use std::time::Instant;
 
 pub const STACK_SIZE: usize = 32 * 1024;
@@ -528,7 +529,26 @@ impl Vm {
         self.run_from(first)
     }
 
+    /// Only these explicitly supplied streams are available to the guest.
+    pub fn run_with_io(
+        &mut self,
+        input: &mut dyn BufRead,
+        output: &mut dyn Write,
+    ) -> Result<(), VmError> {
+        let first = self.instructions.first.ok_or(VmError::MissingInstruction)?;
+        self.execute(first, Some((input, output)))
+    }
+
     pub fn run_from(&mut self, start: InstrId) -> Result<(), VmError> {
+        self.execute(start, None)
+    }
+
+    fn execute(
+        &mut self,
+        start: InstrId,
+        mut io: Option<(&mut dyn BufRead, &mut dyn Write)>,
+    ) -> Result<(), VmError> {
+        let mut written = self.output.len();
         self.sp = GLOBAL_SIZE;
         self.fp = None;
         self.started_at = Instant::now();
@@ -697,7 +717,20 @@ impl Vm {
                     Some(target)
                 }
                 Opcode::CallExt => {
-                    self.run_ext_func(instr.args[0].ext_func()?)?;
+                    let func = instr.args[0].ext_func()?;
+                    if let Some((reader, _)) = io.as_mut() {
+                        self.refill_input(func, *reader)?;
+                    }
+                    self.run_ext_func(func)?;
+                    if let Some((_, writer)) = io.as_mut() {
+                        writer
+                            .write_all(self.output[written..].as_bytes())
+                            .map_err(|_| VmError::InvalidInput("writable output stream"))?;
+                        writer
+                            .flush()
+                            .map_err(|_| VmError::InvalidInput("writable output stream"))?;
+                        written = self.output.len();
+                    }
                     next
                 }
                 Opcode::CastCD => {
@@ -1127,6 +1160,44 @@ impl Vm {
         Err(VmError::MissingInstruction)
     }
 
+    fn refill_input(&mut self, func: ExtFunc, reader: &mut dyn BufRead) -> Result<(), VmError> {
+        if !matches!(
+            func,
+            ExtFunc::GetI | ExtFunc::GetD | ExtFunc::GetC | ExtFunc::GetS
+        ) {
+            return Ok(());
+        }
+        let rest: String = self.input[self.input_pos..].iter().collect();
+        let need = match func {
+            ExtFunc::GetI | ExtFunc::GetD => rest.chars().all(char::is_whitespace),
+            ExtFunc::GetS => rest.is_empty() || rest == "\n",
+            _ => rest.is_empty(),
+        };
+        if need {
+            let mut consumed = 0;
+            loop {
+                let mut bytes = Vec::new();
+                std::io::Read::take(&mut *reader, 1024 * 1024 + 1)
+                    .read_until(b'\n', &mut bytes)
+                    .map_err(|_| VmError::InvalidInput("readable input stream"))?;
+                consumed += bytes.len();
+                if consumed > 1024 * 1024 {
+                    return Err(VmError::ResourceLimit);
+                }
+                let eof = bytes.is_empty();
+                let line =
+                    String::from_utf8(bytes).map_err(|_| VmError::InvalidInput("UTF-8 input"))?;
+                let skip = matches!(func, ExtFunc::GetI | ExtFunc::GetD)
+                    && line.chars().all(char::is_whitespace);
+                self.set_input(&line);
+                if !skip || eof {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn run_ext_func(&mut self, func: ExtFunc) -> Result<(), VmError> {
         match func {
             ExtFunc::PutS => {
@@ -1184,7 +1255,10 @@ impl Vm {
                     .copied()
                     .ok_or(VmError::InvalidInput("character"))?;
                 self.input_pos += 1;
-                self.push_c(value as u8)?;
+                self.push_c(
+                    u8::try_from(value as u32)
+                        .map_err(|_| VmError::InvalidInput("byte character"))?,
+                )?;
             }
             ExtFunc::Seconds => self.push_d(self.started_at.elapsed().as_secs_f64())?,
         }

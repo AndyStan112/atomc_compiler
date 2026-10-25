@@ -1,3 +1,4 @@
+#![allow(dead_code)] // Preserve the baseline symbol-table inspection API.
 use crate::layout::{self, Ty, Structs};
 use crate::lexer::{Token, TokenCode};
 
@@ -246,7 +247,7 @@ impl<'a> Analyser<'a> {
 
         match (&s1.tb, &s2.tb) {
             (TypeBase::Double, TypeBase::Char | TypeBase::Int | TypeBase::Double)
-            | (TypeBase::Char | TypeBase::Int | TypeBase::Double, TypeBase::Double) => self.create_type(TypeBase::Double, -1),
+            | (TypeBase::Char | TypeBase::Int, TypeBase::Double) => self.create_type(TypeBase::Double, -1),
             (TypeBase::Int, TypeBase::Char | TypeBase::Int)
             | (TypeBase::Char, TypeBase::Int) => self.create_type(TypeBase::Int, -1),
             (TypeBase::Char, TypeBase::Char) => self.create_type(TypeBase::Char, -1),
