@@ -1,0 +1,12 @@
+import math;
+
+struct Circle {
+    double radius;
+};
+
+int calculations;
+
+double circle_area(struct Circle circle) {
+    calculations = calculations + 1;
+    return 3.141592653589793 * pow(circle.radius, 2);
+}

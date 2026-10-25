@@ -1,0 +1,13 @@
+import io;
+import "lib/geometry.atomc";
+
+int main() {
+    struct Circle circle;
+    put_s("Enter a circle radius:");
+    circle.radius = get_d();
+    put_s("Area:");
+    put_d(circle_area(circle));
+    put_s("Calculations:");
+    put_i(calculations);
+    return 0;
+}

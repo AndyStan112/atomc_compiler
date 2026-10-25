@@ -54,7 +54,10 @@ version 1 files continue to load. The math library appends the following IDs:
 No other external calls exist. Older decoders reject the new math IDs as unknown.
 Imports select source-level declarations and add no bytecode records or native
 symbols; both signatures and external IDs come from one built-in registry.
-Math uses the same runtime domain checks after deserialization.
+Math uses the same runtime domain checks after deserialization. Custom source
+imports compile into ordinary guest functions and data. Their source paths and
+import graphs are not encoded, and execution requires no source files or runtime
+file access. The bytecode format version and external IDs remain unchanged.
 
 Opcode IDs are explicit and must remain stable within version 1:
 

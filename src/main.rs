@@ -3,6 +3,7 @@
 use std::env;
 use std::fs::File;
 use std::io::{self, Read, Write};
+use std::path::Path;
 
 mod analyser;
 mod builtins;
@@ -30,9 +31,7 @@ fn read_file(path: &str, limit: usize) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 fn source(path: &str) -> Result<compiler::Program, String> {
-    let text =
-        String::from_utf8(read_file(path, 1024 * 1024)?).map_err(|_| "source must be UTF-8")?;
-    compiler::compile(&text)
+    compiler::compile_file(Path::new(path))
 }
 fn run() -> Result<(), String> {
     let args: Vec<_> = env::args().skip(1).collect();

@@ -725,10 +725,12 @@ fn arithmetic(a: &Ty, b: &Ty) -> Result<Ty> {
     })
 }
 
+#[allow(dead_code)] // Keep the filesystem-free entry point for in-memory compilation.
 pub fn compile(source: &str) -> Result<Program> {
     compile_named(source, "<source>")
 }
 
+#[allow(dead_code)]
 fn compile_named(source: &str, name: &str) -> Result<Program> {
     if source.len() > modules::MAX_SOURCE_BYTES {
         return Err(format!("{name}: source exceeds 1 MiB"));
@@ -931,12 +933,16 @@ fn compile_tokens(tokens: &[Token<'_>], entry: &str) -> Result<Program> {
         );
         g.ret = f.ret.clone();
         g.local_size = 0;
-        g.args_size = f.params.iter().try_fold(0usize, |total, (_, t)| {
-            total
-                .checked_add(g.size(t)?)
-                .filter(|n| *n <= layout::MAX_OBJECT - 16)
-                .ok_or("function arguments exceed guest stack limit".to_string())
-        })?;
+        g.args_size = f
+            .params
+            .iter()
+            .try_fold(0usize, |total, (_, t)| {
+                total
+                    .checked_add(g.size(t)?)
+                    .filter(|n| *n <= layout::MAX_OBJECT - 16)
+                    .ok_or("function arguments exceed guest stack limit".to_string())
+            })
+            .map_err(|e| format!("{}: {e}", f.location))?;
         g.scopes.push(BTreeMap::new());
         let mut offset = -(16 + g.args_size as i64);
         for (n, t) in f.params {
@@ -967,10 +973,10 @@ fn compile_tokens(tokens: &[Token<'_>], entry: &str) -> Result<Program> {
     let main = g
         .signatures
         .get("main")
-        .ok_or("program requires main()")?
+        .ok_or_else(|| format!("{entry}: program requires main()"))?
         .clone();
     if !main.params.is_empty() || !matches!(main.ret, Ty::Void | Ty::Int) {
-        return Err("main must be int main() or void main()".into());
+        return Err(format!("{entry}: main must be int main() or void main()"));
     }
     g.patch(entry, main.target.ok_or("missing main")?);
     if main.ret == Ty::Int {

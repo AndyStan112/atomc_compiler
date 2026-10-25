@@ -194,3 +194,157 @@ fn optional_math_library_runs_from_source_and_bytecode() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("math domain or range error"));
 }
+
+#[test]
+fn custom_imports_resolve_relative_to_the_importer_and_bytecode_is_self_contained() {
+    let temp = Temp::new();
+    let project = temp.0.join("project");
+    let elsewhere = temp.0.join("elsewhere");
+    fs::create_dir_all(project.join("lib")).unwrap();
+    fs::create_dir(&elsewhere).unwrap();
+    let entry = project.join("main.atomc");
+    fs::write(
+        project.join("common.atomc"),
+        "int twice(int n){return n*2;}",
+    )
+    .unwrap();
+    fs::write(
+        project.join("lib/a.atomc"),
+        "import \"../common.atomc\";int a(int n){return twice(n);}",
+    )
+    .unwrap();
+    fs::write(
+        project.join("b.atomc"),
+        "import \"common.atomc\";int b(){return twice(1);}",
+    )
+    .unwrap();
+    fs::write(&entry,"import io;import \"lib/a.atomc\";import \"b.atomc\";int main(){put_i(a(get_i())+b());return 0;}").unwrap();
+    let mut child = cli()
+        .arg(&entry)
+        .current_dir(&elsewhere)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"20\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(out.stdout, b"42\n");
+    let binary = temp.0.join("program.atbc");
+    let second = temp.0.join("second.atbc");
+    for output in [&binary, &second] {
+        let out = cli()
+            .arg("--compile")
+            .arg(&entry)
+            .arg(output)
+            .current_dir(&elsewhere)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{:?}", out);
+    }
+    assert_eq!(fs::read(&binary).unwrap(), fs::read(second).unwrap());
+    fs::remove_dir_all(project).unwrap();
+    let mut child = cli()
+        .arg("--run-bytecode")
+        .arg(binary)
+        .current_dir(&elsewhere)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"20\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(out.stdout, b"42\n");
+}
+
+#[test]
+fn custom_import_errors_report_the_importing_file_or_dependency_location() {
+    let temp = Temp::new();
+    let entry = temp.source("import \"library.atomc\";int main(){return 0;}");
+    let library = temp.0.join("library.atomc");
+    fs::write(&library, "int f(){\n    return missing;\n}").unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("library.atomc"), "{error}");
+    assert!(error.contains("Line: 2"), "{error}");
+    assert!(error.contains("undefined symbol: missing"), "{error}");
+    fs::write(&library, "int x").unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("library.atomc"));
+    assert!(error.contains("end of source module"));
+    fs::remove_file(library).unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("program.atomc:1:8"), "{error}");
+    assert!(error.contains("could not resolve import"));
+}
+
+#[test]
+fn circular_conflicting_and_entry_defining_imports_fail_cleanly() {
+    let temp = Temp::new();
+    let entry = temp.source("import \"a.atomc\";int main(){return 0;}");
+    fs::write(temp.0.join("a.atomc"), "import \"b.atomc\";").unwrap();
+    fs::write(temp.0.join("b.atomc"), "import \"a.atomc\";").unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    let error = String::from_utf8_lossy(&out.stderr);
+    assert!(error.contains("circular source import"));
+    assert!(error.contains("a.atomc ->"));
+    assert!(error.contains("b.atomc ->"));
+    fs::write(temp.0.join("a.atomc"), "int main(){return 0;}").unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("only the entry file"));
+    fs::write(temp.0.join("a.atomc"), "int x;").unwrap();
+    temp.source("import \"a.atomc\";int x;int main(){return 0;}");
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("symbol redefinition: x"));
+}
+
+#[test]
+fn custom_imports_cannot_resolve_outside_the_entry_directory() {
+    let temp = Temp::new();
+    let project = temp.0.join("project");
+    fs::create_dir(&project).unwrap();
+    let outside = temp.0.join("outside.atomc");
+    fs::write(&outside, "int external;").unwrap();
+    let entry = project.join("main.atomc");
+    fs::write(&entry, "import \"../outside.atomc\";int main(){return 0;}").unwrap();
+    let out = cli().arg(&entry).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("outside entry directory"));
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, project.join("link.atomc")).unwrap();
+        fs::write(&entry, "import \"link.atomc\";int main(){return 0;}").unwrap();
+        let out = cli().arg(&entry).output().unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("outside entry directory"));
+    }
+}
+
+#[test]
+fn multi_file_example_runs_with_standard_io() {
+    let mut child = cli()
+        .arg("examples/modules/main.atomc")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"2\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{:?}", out);
+    assert_eq!(
+        out.stdout,
+        b"Enter a circle radius:\nArea:\n12.566370614359172\nCalculations:\n1\n"
+    );
+}

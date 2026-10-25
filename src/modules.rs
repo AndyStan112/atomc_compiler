@@ -287,6 +287,21 @@ mod tests {
             assert!(error(&entry).contains("outside entry directory"));
         }
     }
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases_inside_the_root_are_deduplicated() {
+        let tree = Tree::new();
+        let common = tree.write("common.atomc", "int x;");
+        std::os::unix::fs::symlink(common, tree.0.join("alias.atomc")).unwrap();
+        let entry = tree.write(
+            "main.atomc",
+            "import \"common.atomc\";import \"alias.atomc\";int main(){return 0;}",
+        );
+        let files = load(&entry).unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files[0].name.ends_with("common.atomc"));
+    }
+
     #[test]
     fn aggregate_size_file_count_and_depth_are_bounded() {
         let tree = Tree::new();

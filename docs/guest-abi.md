@@ -59,7 +59,8 @@ within that extent. `get_s` rejects oversized input before modifying memory;
 The `io` built-in library exports `put_s`, `get_s`, `put_i`, `get_i`, `put_d`,
 `get_d`, `put_c`, and `get_c`. Source programs must begin with `import io;` to use
 them. `seconds()` remains a core built-in. Imports occur before all declarations,
-are idempotent, and resolve only allowlisted built-in names. Imported functions
+are idempotent, and use bare names for allowlisted built-ins or quoted relative
+paths for [custom source dependencies](imports.md). Imported functions
 use unqualified names and cannot be redefined. Imports are source-level name
 visibility, not bytecode permissions; loaded bytecode uses the same fixed external
 allowlist. The optional `math` library adds checked scalar math functions; see
@@ -71,12 +72,14 @@ token. Character input consumes the next UTF-8 character and rejects values abov
 skipping one pending newline, and includes a terminating NUL in the destination.
 `seconds` returns elapsed VM runtime. The VM accepts supplied input and buffers
 output; it does not access files, environment variables, shell commands, or process
-creation. The trusted CLI alone reads explicitly named program files and stdin,
+creation. The trusted compiler resolves source imports before execution. The CLI
+reads the entry program, its source dependencies, and stdin,
 writes explicitly named bytecode output files, and prints guest output.
 
 Limits: 32 KiB globals, 32 KiB stack, 256 calls, 65,536 live references, one million
 instructions per run, and approximately 1 MiB buffered output (checked each
-instruction). Compiler input is limited to 1 MiB, delimiter nesting to 64, statement nesting to 128, and
+instruction). Compiler input is limited to 1 MiB across at most 128 files and 32
+import levels, delimiter nesting to 64, statement nesting to 128, and
 individual source segments between braces/semicolons to 256 tokens. These are
 resource bounds, not a claim of a formally verified sandbox. Bytecode is untrusted
 and must use the checked execution path.

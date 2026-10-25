@@ -20,11 +20,13 @@ after declarations are compilation errors. An imported function cannot be
 redefined. Without its library import, the same name can be used for a normal
 user-defined function. The core `double seconds()` helper needs no import.
 
-Imports resolve a fixed registry compiled into AtomC. They do not read source
-files, search directories or environment variables, load native libraries, or
-resolve arbitrary host symbols. Source-file modules and `#include` remain
-unsupported. Imports control source-level visibility; bytecode has only the
-allowlisted external IDs documented in [the bytecode format](bytecode.md).
+Bare-name imports resolve a fixed registry compiled into AtomC. They do not
+search directories or environment variables, load native libraries, or resolve
+arbitrary host symbols. Quoted imports such as `import "lib/helpers.atomc";` load
+custom source dependencies during compilation; see [custom imports](imports.md)
+for resolution, shared visibility, and limits. `#include` remains unsupported.
+Imports control source-level visibility; bytecode has only the allowlisted
+external IDs documented in [the bytecode format](bytecode.md).
 
 ## `io`
 
