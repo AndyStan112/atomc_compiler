@@ -1,3 +1,4 @@
+use crate::layout::{self, Ty, Structs};
 use crate::lexer::{Token, TokenCode};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +97,7 @@ pub struct Analyser<'a> {
     scope_stack: Vec<usize>,
     owner: Option<Owner<'a>>,
     global_offset: usize,
+    layouts: Structs,
     anonymous_scope_counter: usize,
     last_type: Option<Type<'a>>,
     last_array_decl_present: bool,
@@ -119,6 +121,7 @@ impl<'a> Analyser<'a> {
             scope_stack: vec![0],
             owner: None,
             global_offset: 0,
+            layouts: Structs::new(),
             anonymous_scope_counter: 0,
             last_type: None,
             last_array_decl_present: false,
@@ -538,32 +541,18 @@ impl<'a> Analyser<'a> {
         offset
     }
 
-    fn type_size(&self, typ: &Type<'a>) -> usize {
-        let base_size = match typ.tb {
-            TypeBase::Int => 4,
-            TypeBase::Double => 8,
-            TypeBase::Char => 1,
-            TypeBase::Void => 0,
-            TypeBase::Struct(name) => self.struct_size(name),
+    fn guest_type(typ: &Type<'a>) -> Ty {
+        let base = match typ.tb {
+            TypeBase::Int => Ty::Int, TypeBase::Double => Ty::Double,
+            TypeBase::Char => Ty::Char, TypeBase::Void => Ty::Void,
+            TypeBase::Struct(name) => Ty::Struct(name.into()),
         };
-
-        if typ.n > 0 {
-            base_size * typ.n as usize
-        } else {
-            base_size
-        }
+        if typ.n > 0 { Ty::Array(Box::new(base), typ.n as usize) } else { base }
     }
 
-    fn struct_size(&self, name: &str) -> usize {
-        for scope in &self.scopes {
-            for symbol in &scope.symbols {
-                if symbol.name == name && symbol.kind == SymbolKind::Struct {
-                    return symbol.members.iter().map(|member| self.type_size(&member.typ)).sum();
-                }
-            }
-        }
-
-        0
+    fn type_size(&self, typ: &Type<'a>) -> usize {
+        layout::layout(&Self::guest_type(typ), &self.layouts)
+            .unwrap_or_else(|e| self.domain_error_at(self.pos, e)).size
     }
 
     fn type_text(&self, typ: &Type<'a>) -> String {
@@ -772,6 +761,11 @@ impl<'a> Analyser<'a> {
             matches!(code, TokenCode::SEMICOLON)
         });
 
+        let fields = self.current_scope().symbols.iter()
+            .map(|s| (s.name.to_string(), Self::guest_type(&s.typ))).collect();
+        let definition = layout::structure(fields, &self.layouts)
+            .unwrap_or_else(|e| self.domain_error_at(name_pos, e));
+        self.layouts.insert(name.to_string(), definition);
         self.owner = old_owner;
         self.drop_scope();
 
@@ -816,8 +810,22 @@ impl<'a> Analyser<'a> {
         let mut symbol = self.new_symbol(name, SymbolKind::Var, memory.clone(), typ.clone());
 
         symbol.var_idx = match memory {
-            MemoryKind::Global => self.alloc_global(self.type_size(&typ)),
-            MemoryKind::StructMember => self.current_scope().symbols.iter().map(|symbol| self.type_size(&symbol.typ)).sum(),
+            MemoryKind::Global => {
+                let l = layout::layout(&Self::guest_type(&typ), &self.layouts)
+                    .unwrap_or_else(|e| self.domain_error_at(name_pos, e));
+                self.global_offset = layout::align_up(self.global_offset, l.align).unwrap();
+                let size = l.size;
+                if self.global_offset.checked_add(size).is_none_or(|end| end > layout::MAX_OBJECT) {
+                    self.domain_error_at(name_pos, "globals exceed guest memory limit".into());
+                }
+                self.alloc_global(size)
+            },
+            MemoryKind::StructMember => {
+                let l = layout::layout(&Self::guest_type(&typ), &self.layouts)
+                    .unwrap_or_else(|e| self.domain_error_at(name_pos, e));
+                let end = self.current_scope().symbols.last().map(|s| s.var_idx + self.type_size(&s.typ)).unwrap_or(0);
+                layout::align_up(end, l.align).unwrap()
+            },
             MemoryKind::Local => self.current_scope().symbols.iter().filter(|symbol| symbol.kind == SymbolKind::Var).count(),
             MemoryKind::Arg => 0,
         };

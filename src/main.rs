@@ -5,6 +5,7 @@ use std::fs;
 mod lexer;
 mod analyser;
 mod vm;
+mod layout;
 
 fn main() {
     let filename = env::args()
