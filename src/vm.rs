@@ -31,18 +31,10 @@ pub enum ExtFunc {
 
 impl ExtFunc {
     pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "put_s" => Some(Self::PutS),
-            "get_s" => Some(Self::GetS),
-            "put_i" => Some(Self::PutI),
-            "get_i" => Some(Self::GetI),
-            "put_d" => Some(Self::PutD),
-            "get_d" => Some(Self::GetD),
-            "put_c" => Some(Self::PutC),
-            "get_c" => Some(Self::GetC),
-            "seconds" => Some(Self::Seconds),
-            _ => None,
-        }
+        crate::builtins::ALL
+            .iter()
+            .find(|b| b.name == name)
+            .map(|b| b.function)
     }
 }
 

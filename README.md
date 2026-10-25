@@ -9,6 +9,7 @@ Run a real program with standard input and output:
 cargo run -- examples/sum.atomc
 ```
 
+The example starts with `import io;`, which makes the input/output functions available.
 The program prints a prompt; enter two integers, for example `20 22`. It prints
 `Sum:` followed by `42`. Piped input works too:
 
@@ -26,6 +27,23 @@ printf '20 22\n' | cargo run --quiet -- --run-bytecode /tmp/sum.atbc
 The output file must not already exist. With no arguments, AtomC compiles and
 runs the original `data/main.atomc` (which does not print output). Errors go to
 stderr with nonzero exit status. Guest output alone goes to stdout.
+
+Built-in libraries are imported at the start of a source file:
+
+```c
+import io;
+
+int main() {
+    put_i(get_i());
+    return 0;
+}
+```
+
+I/O functions require `import io;`; existing source files using them need this
+line. Duplicate imports are harmless. Unknown libraries, imports inside functions,
+and imports after declarations are errors. Imports select a fixed built-in
+registry; they do not load files, native libraries, or source modules. The runtime
+helper `double seconds()` remains available without an import.
 
 Supported features include scalar numeric types and casts, globals and scoped
 locals, fixed arrays, nested structs, functions and recursion, `if`/`else`,

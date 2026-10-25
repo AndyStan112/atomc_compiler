@@ -4,6 +4,7 @@
 pub enum TokenCode<'a> {
     ID(&'a str),
 
+    IMPORT,
     BREAK,
     CHAR,
     DOUBLE,
@@ -163,6 +164,7 @@ impl<'a> Lexer<'a> {
 
     fn keyword_or_id(&self, s: &'a str) -> TokenCode<'a> {
         match s {
+            "import" => TokenCode::IMPORT,
             "break" => TokenCode::BREAK,
             "char" => TokenCode::CHAR,
             "double" => TokenCode::DOUBLE,

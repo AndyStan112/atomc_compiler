@@ -56,8 +56,13 @@ reference extent; stores also require write permission. String operations remain
 within that extent. `get_s` rejects oversized input before modifying memory;
 `put_s` requires a NUL terminator inside the object. String literals include NUL. String and character literals support the standard single-character escapes (`\n`, `\t`, `\0`, escaped quotes and backslashes, etc.).
 
-Only `put_s`, `get_s`, `put_i`, `get_i`, `put_d`, `get_d`, `put_c`, `get_c`, and
-`seconds` are exposed. Numeric output ends in newline; `put_s` adds newline;
+The `io` built-in library exports `put_s`, `get_s`, `put_i`, `get_i`, `put_d`,
+`get_d`, `put_c`, and `get_c`. Source programs must begin with `import io;` to use
+them. `seconds()` remains a core built-in. Imports occur before all declarations,
+are idempotent, and resolve only allowlisted built-in names. Imported functions
+use unqualified names and cannot be redefined. Imports are source-level name
+visibility, not bytecode permissions; loaded bytecode uses the same fixed external
+allowlist. Numeric output ends in newline; `put_s` adds newline;
 `put_c` writes the byte value as a Unicode character encoded in UTF-8. Numeric input consumes a whitespace-delimited
 token. Character input consumes the next UTF-8 character and rejects values above 255. String input reads a line,
 skipping one pending newline, and includes a terminating NUL in the destination.

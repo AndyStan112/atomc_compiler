@@ -1,5 +1,6 @@
 //! Lower validated AtomC tokens into the existing stack VM instruction set.
 use crate::analyser::Analyser;
+use crate::builtins;
 use crate::layout::{self, Structs, Ty};
 use crate::lexer::{Lexer, Token, TokenCode as T};
 use crate::vm::{ExtFunc, InstrArg, Instructions, Opcode as O, Vm, GLOBAL_SIZE};
@@ -773,26 +774,23 @@ fn compile_inner(source: &str) -> Result<Program> {
         ret: Ty::Void,
         breaks: Vec::new(),
     };
-    for (name, ret, params) in [
-        ("put_i", Ty::Void, vec![Ty::Int]),
-        ("get_i", Ty::Int, vec![]),
-        ("put_d", Ty::Void, vec![Ty::Double]),
-        ("get_d", Ty::Double, vec![]),
-        ("put_c", Ty::Void, vec![Ty::Char]),
-        ("get_c", Ty::Char, vec![]),
-        ("put_s", Ty::Void, vec![Ty::Array(Box::new(Ty::Char), 0)]),
-        ("get_s", Ty::Void, vec![Ty::Array(Box::new(Ty::Char), 0)]),
-        ("seconds", Ty::Double, vec![]),
-    ] {
+    for builtin in builtins::ALL
+        .iter()
+        .filter(|b| analyser.libraries().contains(&b.library))
+    {
         g.signatures.insert(
-            name.into(),
+            builtin.name.into(),
             Signature {
-                ret,
-                params,
+                ret: builtin.result.ty(),
+                params: builtin.params.iter().map(|p| p.ty()).collect(),
                 target: None,
-                ext: ExtFunc::from_name(name),
+                ext: Some(builtin.function),
             },
         );
+    }
+    while parser.eat(T::IMPORT) {
+        parser.name()?;
+        parser.expect(T::SEMICOLON)?;
     }
     let mut functions = Vec::new();
     while parser.current() != T::END {
@@ -940,24 +938,26 @@ mod tests {
     }
     #[test]
     fn recursive_calls_conversions_and_io() {
-        assert_eq!(run("int fact(int n){if(n<2)return 1;return n*fact(n-1);} int main(){put_i(fact(get_i()));put_d(2+0.5);return 0;}","5").unwrap(),"120\n2.5\n");
+        assert_eq!(run("import io; int fact(int n){if(n<2)return 1;return n*fact(n-1);} int main(){put_i(fact(get_i()));put_d(2+0.5);return 0;}","5").unwrap(),"120\n2.5\n");
     }
     #[test]
     fn arrays_structs_loops_and_reference_parameters() {
-        let src = "struct P{char c;double d;int x[2];}; int sum(int a[],int n){int i;int s;s=0;for(i=0;i<n;i=i+1){s=s+a[i];}return s;} int main(){struct P p;int a[2];a[0]=3;a[1]=4;p.x[0]=sum(a,2);p.d=2.5;put_i(p.x[0]);put_d(p.d);return 0;}";
+        let src = "import io; struct P{char c;double d;int x[2];}; int sum(int a[],int n){int i;int s;s=0;for(i=0;i<n;i=i+1){s=s+a[i];}return s;} int main(){struct P p;int a[2];a[0]=3;a[1]=4;p.x[0]=sum(a,2);p.d=2.5;put_i(p.x[0]);put_d(p.d);return 0;}";
         assert_eq!(run(src, "").unwrap(), "7\n2.5\n");
     }
     #[test]
     fn short_circuit_and_break() {
-        assert_eq!(run("int main(){int x;x=0;if(0 && (x=1))x=2;if(1 || (x=3))put_i(x);while(1){break;}return 0;}","").unwrap(),"0\n");
+        assert_eq!(run("import io; int main(){int x;x=0;if(0 && (x=1))x=2;if(1 || (x=3))put_i(x);while(1){break;}return 0;}","").unwrap(),"0\n");
     }
     #[test]
     fn bounds_survive_parameter_passing() {
         let s = "void f(int a[]){a[2]=9;} int main(){int a[2];int b;f(a);return 0;}";
         assert!(run(s, "").unwrap_err().contains("bounds"));
-        assert!(run("int main(){int a[2];put_i(a[-1]);return 0;}", "")
-            .unwrap_err()
-            .contains("bounds"));
+        assert!(
+            run("import io; int main(){int a[2];put_i(a[-1]);return 0;}", "")
+                .unwrap_err()
+                .contains("bounds")
+        );
     }
     #[test]
     fn rejects_invalid_entry_break_and_recursive_layout() {
@@ -971,12 +971,12 @@ mod tests {
     }
     #[test]
     fn numeric_edges_and_escaped_literals() {
-        let src = r#"int main(){char c;c=300;put_i(c);put_i(-2147483648/-1);put_c('\n');put_s("quoted: \"ok\"");return 0;}"#;
+        let src = r#"import io; int main(){char c;c=300;put_i(c);put_i(-2147483648/-1);put_c('\n');put_s("quoted: \"ok\"");return 0;}"#;
         assert_eq!(run(src, "").unwrap(), "44\n-2147483648\n\nquoted: \"ok\"\n");
     }
     #[test]
     fn struct_parameters_are_copied_and_inner_arrays_are_bounded() {
-        let src = "struct S{int x[2];int y;};void f(struct S s){s.x[0]=99;}int main(){struct S s;s.x[0]=4;f(s);put_i(s.x[0]);return 0;}";
+        let src = "import io; struct S{int x[2];int y;};void f(struct S s){s.x[0]=99;}int main(){struct S s;s.x[0]=4;f(s);put_i(s.x[0]);return 0;}";
         assert_eq!(run(src, "").unwrap(), "4\n");
         assert!(run(
             "struct S{int x[2];int y;};int main(){struct S s;s.x[2]=5;return 0;}",
@@ -1003,6 +1003,32 @@ mod tests {
         let chain = format!("int main(){{{}return 0;}}", "if(1);else ".repeat(1000));
         assert!(compile(&chain).is_err());
         assert!(compile("struct Big{char data[20000];};void f(struct Big a,struct Big b){}int main(){return 0;}").is_err());
+    }
+
+    #[test]
+    fn imports_are_explicit_and_duplicates_are_idempotent() {
+        assert!(compile("int main(){put_i(1);return 0;}").is_err());
+        assert!(compile("int main(){get_i();return 0;}").is_err());
+        assert_eq!(
+            run("import io;import io;int main(){put_i(7);return 0;}", "").unwrap(),
+            "7\n"
+        );
+        assert!(compile("int main(){seconds();return 0;}").is_ok());
+        // Unimported names remain available for ordinary user functions.
+        assert!(compile("int put_i(int n){return n;}int main(){return put_i(7);}").is_ok());
+    }
+    #[test]
+    fn rejects_unknown_malformed_late_and_conflicting_imports() {
+        for source in [
+            "import missing;int main(){return 0;}",
+            "import io int main(){return 0;}",
+            "import \"io\";int main(){return 0;}",
+            "int x;import io;int main(){return 0;}",
+            "int main(){import io;return 0;}",
+            "import io;int put_i(int x){return x;}int main(){return 0;}",
+        ] {
+            assert!(compile(source).is_err(), "{source}");
+        }
     }
 
     #[test]

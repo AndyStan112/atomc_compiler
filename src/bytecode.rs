@@ -1,6 +1,7 @@
 //! Versioned, canonical bytecode with no native pointers or host function names.
+use crate::builtins;
 use crate::compiler::Program;
-use crate::vm::{ExtFunc, InstrArg as A, Instructions, Opcode as O, GLOBAL_SIZE, STACK_SIZE};
+use crate::vm::{InstrArg as A, Instructions, Opcode as O, GLOBAL_SIZE, STACK_SIZE};
 use std::collections::BTreeMap;
 
 pub const MAX_INSTRUCTIONS: usize = 65536;
@@ -91,17 +92,6 @@ const OPS: &[(u16, O, &str)] = &[
     (81, O::SubD, ""),
     (82, O::SubI, ""),
 ];
-const EXTERNALS: &[ExtFunc] = &[
-    ExtFunc::PutS,
-    ExtFunc::GetS,
-    ExtFunc::PutI,
-    ExtFunc::GetI,
-    ExtFunc::PutD,
-    ExtFunc::GetD,
-    ExtFunc::PutC,
-    ExtFunc::GetC,
-    ExtFunc::Seconds,
-];
 
 pub fn encode(program: &Program) -> Result<Vec<u8>, String> {
     if program.globals.len() > GLOBAL_SIZE {
@@ -141,10 +131,13 @@ pub fn encode(program: &Program) -> Result<Vec<u8>, String> {
                 (b't', A::Instr(n)) => {
                     *ids.get(&n).ok_or("target outside instruction chain")? as u64
                 }
-                (b'e', A::ExtFunc(f)) => EXTERNALS
-                    .iter()
-                    .position(|e| *e == f)
-                    .ok_or("unknown external")? as u64,
+                (b'e', A::ExtFunc(f)) => {
+                    builtins::ALL
+                        .iter()
+                        .find(|b| b.function == f)
+                        .ok_or("unknown external")?
+                        .wire_id
+                }
                 _ => return Err("invalid instruction operand type".into()),
             };
         }
@@ -201,9 +194,11 @@ pub fn decode(bytes: &[u8]) -> Result<Program, String> {
                     A::Instr(n as usize)
                 }
                 Some(b'e') => A::ExtFunc(
-                    *EXTERNALS
-                        .get(usize::try_from(n).map_err(|_| "invalid external")?)
-                        .ok_or("invalid external")?,
+                    builtins::ALL
+                        .iter()
+                        .find(|b| b.wire_id == n)
+                        .ok_or("invalid external")?
+                        .function,
                 ),
                 None if n == 0 => A::None,
                 _ => return Err("invalid or noncanonical operand".into()),
@@ -282,8 +277,10 @@ mod tests {
     use crate::compiler::compile;
     #[test]
     fn round_trip_is_canonical_and_executable() {
-        let p = compile("int twice(int x){return x*2;}int main(){put_i(twice(get_i()));return 0;}")
-            .unwrap();
+        let p = compile(
+            "import io; int twice(int x){return x*2;}int main(){put_i(twice(get_i()));return 0;}",
+        )
+        .unwrap();
         let bytes = encode(&p).unwrap();
         let p = decode(&bytes).unwrap();
         assert_eq!(encode(&p).unwrap(), bytes);
@@ -308,7 +305,7 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_targets_ext_ids_and_sizes() {
-        let bytes = encode(&compile("int main(){put_i(1);return 0;}").unwrap()).unwrap();
+        let bytes = encode(&compile("import io; int main(){put_i(1);return 0;}").unwrap()).unwrap();
         let mut bad = bytes.clone();
         bad[22..30].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode(&bad).is_err());
@@ -326,7 +323,7 @@ mod tests {
     #[test]
     fn mutated_structurally_valid_bytecode_cannot_panic_the_vm() {
         let source =
-            "int f(int a[]){return a[0];}int main(){int a[2];a[0]=3;put_i(f(a));return 0;}";
+            "import io; int f(int a[]){return a[0];}int main(){int a[2];a[0]=3;put_i(f(a));return 0;}";
         let bytes = encode(&compile(source).unwrap()).unwrap();
         let mut seed = 0x12345678u64;
         for _ in 0..4000 {

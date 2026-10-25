@@ -5,6 +5,7 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 
 mod analyser;
+mod builtins;
 mod bytecode;
 mod compiler;
 mod layout;

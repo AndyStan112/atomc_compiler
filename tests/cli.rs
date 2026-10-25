@@ -106,7 +106,7 @@ fn rejects_bounds_invalid_source_and_host_imports() {
 #[test]
 fn bounded_strings_and_io_errors_are_reported() {
     let temp = Temp::new();
-    let path = temp.source("int main(){char s[4];get_s(s);put_s(s);return 0;}");
+    let path = temp.source("import io; int main(){char s[4];get_s(s);put_s(s);return 0;}");
     for (input, ok, expected) in [("abc\n", true, "abc\n"), ("abcd\n", false, "")] {
         let mut child = cli()
             .arg(&path)
@@ -125,7 +125,7 @@ fn bounded_strings_and_io_errors_are_reported() {
         assert_eq!(out.status.success(), ok);
         assert_eq!(out.stdout, expected.as_bytes());
     }
-    let path = temp.source("int main(){put_i(get_i());return 0;}");
+    let path = temp.source("import io; int main(){put_i(get_i());return 0;}");
     let out = cli().arg(path).stdin(Stdio::null()).output().unwrap();
     assert!(!out.status.success());
 }
@@ -145,4 +145,17 @@ fn malformed_bytecode_and_nonterminating_program_fail() {
     let out = cli().arg(path).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("resource limit"));
+}
+
+#[test]
+fn io_requires_an_explicit_library_import() {
+    let temp = Temp::new();
+    let path = temp.source("int main(){put_i(1);return 0;}");
+    let out = cli().arg(path).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("undefined symbol: put_i"));
+    let path = temp.source("import unknown;int main(){return 0;}");
+    let out = cli().arg(path).output().unwrap();
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("unknown built-in library"));
 }

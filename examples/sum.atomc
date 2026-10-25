@@ -1,3 +1,5 @@
+import io;
+
 struct Result {
     int values[2];
     int total;

@@ -1,5 +1,6 @@
 #![allow(dead_code)] // Preserve the baseline symbol-table inspection API.
 use crate::layout::{self, Ty, Structs};
+use crate::builtins::{self, Library, ValueType};
 use crate::lexer::{Token, TokenCode};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -95,6 +96,7 @@ pub struct Analyser<'a> {
     tokens: &'a [Token<'a>],
     pos: usize,
     statement_depth: usize,
+    libraries: Vec<Library>,
     scopes: Vec<Scope<'a>>,
     scope_stack: Vec<usize>,
     owner: Option<Owner<'a>>,
@@ -114,6 +116,7 @@ impl<'a> Analyser<'a> {
             tokens,
             pos: 0,
             statement_depth: 0,
+            libraries: vec![Library::Core],
             scopes: vec![Scope {
                 name: "global".to_string(),
                 kind: ScopeKind::Global,
@@ -309,34 +312,26 @@ impl<'a> Analyser<'a> {
         }
     }
 
-    pub fn add_ext_funcs(&mut self) {
-        if self.find_symbol_in_current_scope("put_s").is_some() {
-            return;
+    fn builtin_type(ty: ValueType) -> Type<'a> {
+        match ty {
+            ValueType::Void => Type { tb: TypeBase::Void, n: -1 },
+            ValueType::Int => Type { tb: TypeBase::Int, n: -1 },
+            ValueType::Double => Type { tb: TypeBase::Double, n: -1 },
+            ValueType::Char => Type { tb: TypeBase::Char, n: -1 },
+            ValueType::CharArray => Type { tb: TypeBase::Char, n: 0 },
         }
-
-        self.add_ext_func("put_s", self.create_type(TypeBase::Void, -1));
-        self.add_func_arg("put_s", "s", self.create_type(TypeBase::Char, 0));
-
-        self.add_ext_func("get_s", self.create_type(TypeBase::Void, -1));
-        self.add_func_arg("get_s", "s", self.create_type(TypeBase::Char, 0));
-
-        self.add_ext_func("put_i", self.create_type(TypeBase::Void, -1));
-        self.add_func_arg("put_i", "i", self.create_type(TypeBase::Int, -1));
-
-        self.add_ext_func("get_i", self.create_type(TypeBase::Int, -1));
-
-        self.add_ext_func("put_d", self.create_type(TypeBase::Void, -1));
-        self.add_func_arg("put_d", "d", self.create_type(TypeBase::Double, -1));
-
-        self.add_ext_func("get_d", self.create_type(TypeBase::Double, -1));
-
-        self.add_ext_func("put_c", self.create_type(TypeBase::Void, -1));
-        self.add_func_arg("put_c", "c", self.create_type(TypeBase::Char, -1));
-
-        self.add_ext_func("get_c", self.create_type(TypeBase::Char, -1));
-
-        self.add_ext_func("seconds", self.create_type(TypeBase::Double, -1));
     }
+
+    fn add_library(&mut self, library: Library) {
+        for builtin in builtins::ALL.iter().filter(|b| b.library == library) {
+            self.add_ext_func(builtin.name, Self::builtin_type(builtin.result));
+            for &param in builtin.params {
+                self.add_func_arg(builtin.name, "argument", Self::builtin_type(param));
+            }
+        }
+    }
+
+    pub fn libraries(&self) -> &[Library] { &self.libraries }
 
     fn error_at(&self, kind: ErrorKind, token_pos: usize, message: String) -> ! {
         let token = &self.tokens[token_pos];
@@ -361,6 +356,7 @@ impl<'a> Analyser<'a> {
         match &token.code {
             TokenCode::ID(value) => value.to_string(),
 
+            TokenCode::IMPORT => "import".to_string(),
             TokenCode::BREAK => "break".to_string(),
             TokenCode::CHAR => "char".to_string(),
             TokenCode::DOUBLE => "double".to_string(),
@@ -680,7 +676,19 @@ impl<'a> Analyser<'a> {
     }
 
     pub fn parse(&mut self) {
-        self.add_ext_funcs();
+        self.add_library(Library::Core);
+        while self.consume(|code| matches!(code, TokenCode::IMPORT)) {
+            let name_pos = self.pos;
+            self.expect("built-in library name after import", |code| matches!(code, TokenCode::ID(_)));
+            let name = self.id_name_at(name_pos);
+            let library = Library::imported(name).unwrap_or_else(||
+                self.domain_error_at(name_pos, format!("unknown built-in library: {name}")));
+            self.expect("`;` after import", |code| matches!(code, TokenCode::SEMICOLON));
+            if !self.libraries.contains(&library) {
+                self.add_library(library);
+                self.libraries.push(library);
+            }
+        }
         self.unit();
     }
 
@@ -1741,7 +1749,9 @@ mod type_analysis_tests {
     }
 
     fn parses(tokens: Vec<Token<'static>>) {
-        let mut analyser = Analyser::new(&tokens);
+        let mut imported = vec![tk(TokenCode::IMPORT), id("io"), tk(TokenCode::SEMICOLON)];
+        imported.extend(tokens);
+        let mut analyser = Analyser::new(&imported);
         analyser.parse();
     }
 
